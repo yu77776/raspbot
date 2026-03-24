@@ -37,12 +37,12 @@ class FaceEngine:
                 '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
                 '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
                 '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-            ], 14)
+            ], 12)
             self.font_en, self.font_en_name = self._load_font([
                 '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
                 '/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf',
                 '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',
-            ], 12)
+            ], 11)
 
             print(f'[OLED] OK cn={self.font_cn_name} en={self.font_en_name}')
         except Exception as e:
@@ -68,6 +68,11 @@ class FaceEngine:
                 box = draw.textbbox((0, 0), ch, font=font)
                 advance = (box[2] - box[0]) if box else 0
             x += max(1, int(round(advance)))
+
+    def _draw_kv_row(self, draw, y, label, value, value_x=52):
+        self._draw_text_mixed(draw, (2, y), label)
+        self._draw_text_mixed(draw, (value_x, y), value)
+
 
     def set_state(self, s):
         with self.lock:
@@ -112,24 +117,21 @@ class FaceEngine:
         with self.lock:
             d = self.env_data
 
+        y1, y2 = 0, 16
+
         if page == 0:
-            self._draw_text_mixed(draw, (5, 2), '\u6e29\u5ea6: ')
             t = d.get('temp_c', 0)
-            self._draw_text_mixed(draw, (45, 2), f'{t:.1f}C')
-            self._draw_text_mixed(draw, (5, 18), '\u5149\u7167: ')
             l = d.get('light_lux', 0)
-            self._draw_text_mixed(draw, (45, 18), f'{l}lux')
+            self._draw_kv_row(draw, y1, '温度: ', f'{t:.1f}C')
+            self._draw_kv_row(draw, y2, '光照: ', f'{l}lux')
         elif page == 1:
-            self._draw_text_mixed(draw, (5, 2), '\u70df\u96fe: ')
             s = d.get('smoke', 0)
-            self._draw_text_mixed(draw, (45, 2), f'{s}')
-            self._draw_text_mixed(draw, (5, 18), '\u8ddd\u79bb: ')
             dist = d.get('dist_cm', 0)
-            self._draw_text_mixed(draw, (45, 18), f'{dist:.0f}cm')
+            self._draw_kv_row(draw, y1, '烟雾: ', f'{s}')
+            self._draw_kv_row(draw, y2, '距离: ', f'{dist:.0f}cm')
         else:
-            self._draw_text_mixed(draw, (5, 10), '\u97f3\u91cf: ')
             v = d.get('volume', 0)
-            self._draw_text_mixed(draw, (45, 10), f'{v}%')
+            self._draw_kv_row(draw, 9, '音量: ', f'{v}%')
 
         self.device.display(img)
 
