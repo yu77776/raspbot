@@ -113,21 +113,21 @@ class FaceEngine:
             d = self.env_data
 
         if page == 0:
-            self._draw_text_mixed(draw, (5, 2), '??: ')
+            self._draw_text_mixed(draw, (5, 2), '\u6e29\u5ea6: ')
             t = d.get('temp_c', 0)
             self._draw_text_mixed(draw, (45, 2), f'{t:.1f}C')
-            self._draw_text_mixed(draw, (5, 18), '??: ')
+            self._draw_text_mixed(draw, (5, 18), '\u5149\u7167: ')
             l = d.get('light_lux', 0)
             self._draw_text_mixed(draw, (45, 18), f'{l}lux')
         elif page == 1:
-            self._draw_text_mixed(draw, (5, 2), '??: ')
+            self._draw_text_mixed(draw, (5, 2), '\u70df\u96fe: ')
             s = d.get('smoke', 0)
             self._draw_text_mixed(draw, (45, 2), f'{s}')
-            self._draw_text_mixed(draw, (5, 18), '??: ')
+            self._draw_text_mixed(draw, (5, 18), '\u8ddd\u79bb: ')
             dist = d.get('dist_cm', 0)
             self._draw_text_mixed(draw, (45, 18), f'{dist:.0f}cm')
         else:
-            self._draw_text_mixed(draw, (5, 10), '??: ')
+            self._draw_text_mixed(draw, (5, 10), '\u97f3\u91cf: ')
             v = d.get('volume', 0)
             self._draw_text_mixed(draw, (45, 10), f'{v}%')
 
