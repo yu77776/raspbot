@@ -213,7 +213,7 @@ class CarServer:
             print(f'[WS] 断开: {addr}')
 
 def resolve_asr_url(cli_url):
-    return cli_url or os.getenv('RASPBOT_ASR_URL') or os.getenv('ASR_WS_URL') or 'ws://127.0.0.1:6006/audio'
+    return cli_url or os.getenv('RASPBOT_ASR_URL') or os.getenv('ASR_WS_URL') or ''
 
 
 async def main(host, port, asr_url, mic_health_timeout):
