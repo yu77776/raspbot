@@ -217,10 +217,9 @@ def resolve_asr_url(cli_url):
         print(f'[MIC] use ASR from CLI: {cli_url}')
         return cli_url
 
-    env_url = os.getenv('RASPBOT_ASR_URL') or os.getenv('ASR_WS_URL')
-    if env_url:
-        print(f'[MIC] use ASR from ENV: {env_url}')
-        return env_url
+    legacy_env_url = os.getenv('RASPBOT_ASR_URL') or os.getenv('ASR_WS_URL')
+    if legacy_env_url:
+        print(f'[MIC] ignore legacy ASR env url for one-click start: {legacy_env_url}')
 
     pc_ip = os.getenv('RASPBOT_PC_IP') or os.getenv('ASR_HOST') or '10.120.142.133'
     asr_port = os.getenv('RASPBOT_ASR_PORT', '6006')
