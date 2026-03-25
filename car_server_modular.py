@@ -28,6 +28,7 @@ class CarServer:
         self.oled = FaceEngine()
         self.mic_stream = MicStream(asr_url=asr_url)
         self.mic_health_timeout = float(mic_health_timeout)
+        self.mic_enabled = str(asr_url or '').strip().lower() not in {'', 'off', 'none', 'disabled'}
         self.stop_event = threading.Event()
         self.oled_thread = None
         self.mic_watchdog_thread = None
@@ -55,8 +56,8 @@ class CarServer:
                     age = time.time() - self.mic_stream.get_last_ok_ts()
                     if not self.mic_fail_safe_active:
                         print(f'[SAFE] MIC unhealthy age={age:.2f}s timeout={self.mic_health_timeout:.2f}s -> motor.stop()')
-                    self.motor.stop()
-                    self.mic_fail_safe_active = True
+                        self.motor.stop()
+                        self.mic_fail_safe_active = True
                 else:
                     if self.mic_fail_safe_active:
                         print('[SAFE] MIC recovered')
@@ -74,9 +75,12 @@ class CarServer:
         self.camera.start()
         self.audio.start()
         self.oled.start()
-        self.mic_stream.start()
+        if self.mic_enabled:
+            self.mic_stream.start()
+            self._start_mic_watchdog()
+        else:
+            print('[MIC] disabled')
         self._update_oled_loop()
-        self._start_mic_watchdog()
         print(f'[SYS] all modules started (asr_url={self.mic_stream.asr_url}, mic_timeout={self.mic_health_timeout}s)')
 
     def stop_all(self):
@@ -86,7 +90,8 @@ class CarServer:
         if self.oled_thread and self.oled_thread.is_alive():
             self.oled_thread.join(timeout=1.0)
 
-        self.mic_stream.stop()
+        if self.mic_enabled:
+            self.mic_stream.stop()
         self.ultrasonic.stop()
         self.pcf8591.stop()
         self.infrared.stop()
@@ -238,5 +243,7 @@ if __name__ == '__main__':
     p.add_argument('--port', type=int, default=5001)
     p.add_argument('--asr-url', default=None)
     p.add_argument('--mic-health-timeout', type=float, default=float(os.getenv('MIC_HEALTH_TIMEOUT', '2')))
+    p.add_argument('--disable-mic-stream', action='store_true')
     args = p.parse_args()
-    asyncio.run(main(args.host, args.port, resolve_asr_url(args.asr_url), args.mic_health_timeout))
+    asr_url = '' if args.disable_mic_stream else resolve_asr_url(args.asr_url)
+    asyncio.run(main(args.host, args.port, asr_url, args.mic_health_timeout))
