@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys, os, asyncio, json, argparse, threading, time, subprocess
+import sys, os, asyncio, json, argparse, threading, time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from modules.ultrasonic import Ultrasonic
@@ -222,32 +222,11 @@ def resolve_asr_url(cli_url):
         print(f'[MIC] use ASR from ENV: {env_url}')
         return env_url
 
-    gateway_ip = _detect_gateway_ip()
-    if gateway_ip:
-        auto_url = f'ws://{gateway_ip}:6006/audio'
-        print(f'[MIC] auto ASR url from gateway: {auto_url}')
-        return auto_url
-
-    fallback_url = 'ws://127.0.0.1:6006/audio'
-    print(f'[MIC] fallback ASR url: {fallback_url}')
-    return fallback_url
-
-
-def _detect_gateway_ip():
-    try:
-        out = subprocess.check_output(
-            ['ip', 'route', 'show', 'default'],
-            text=True,
-            stderr=subprocess.STDOUT,
-            timeout=2.0,
-        )
-        for line in out.splitlines():
-            parts = line.strip().split()
-            if len(parts) >= 3 and parts[0] == 'default' and parts[1] == 'via':
-                return parts[2]
-    except Exception as e:
-        print(f'[MIC] gateway detect failed: {e}')
-    return None
+    pc_ip = os.getenv('RASPBOT_PC_IP') or os.getenv('ASR_HOST') or '10.120.142.133'
+    asr_port = os.getenv('RASPBOT_ASR_PORT', '6006')
+    auto_url = f'ws://{pc_ip}:{asr_port}/audio'
+    print(f'[MIC] auto ASR url from PC IP: {auto_url}')
+    return auto_url
 
 
 async def main(host, port, asr_url, mic_health_timeout):
