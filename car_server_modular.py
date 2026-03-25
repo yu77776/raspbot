@@ -4,6 +4,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from modules.ultrasonic import Ultrasonic
 from modules.pcf8591 import PCF8591
+from modules.infrared import Infrared
 from modules.camera import Camera
 from modules.motor import Motor
 from modules.audio import Audio
@@ -20,6 +21,7 @@ class CarServer:
     def __init__(self, asr_url=None, mic_health_timeout=2.0):
         self.ultrasonic = Ultrasonic()
         self.pcf8591 = PCF8591()
+        self.infrared = Infrared()
         self.camera = Camera()
         self.motor = Motor()
         self.audio = Audio(songs_dir=os.path.join(os.path.dirname(__file__), 'songs'))
@@ -68,6 +70,7 @@ class CarServer:
         self.stop_event.clear()
         self.ultrasonic.start()
         self.pcf8591.start()
+        self.infrared.start()
         self.camera.start()
         self.audio.start()
         self.oled.start()
@@ -86,6 +89,7 @@ class CarServer:
         self.mic_stream.stop()
         self.ultrasonic.stop()
         self.pcf8591.stop()
+        self.infrared.stop()
         self.camera.stop()
         self.audio.stop()
         self.oled.stop()
@@ -168,6 +172,7 @@ class CarServer:
             while True:
                 env = self.pcf8591.get_data()
                 dist = self.ultrasonic.get_distance()
+                track = self.infrared.get_data().get('track', [1, 1, 1, 1])
                 
                 alarm = ''
                 if env['smoke_alarm']:
@@ -181,6 +186,7 @@ class CarServer:
                     'smoke': env['smoke'],
                     'volume': env['volume'],
                     'dist_cm': round(dist, 1),
+                    'track': track,
                     'alarm': alarm,
                     'imu': None, 'fps': fps
                 }).encode('utf-8')
