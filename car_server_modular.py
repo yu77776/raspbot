@@ -9,6 +9,7 @@ from modules.camera import Camera
 from modules.motor import Motor
 from modules.audio import Audio
 from modules.oled_face import FaceEngine
+from modules.mic_stream import MicStream
 import websockets
 from websockets.server import WebSocketServerProtocol
 
@@ -17,7 +18,7 @@ MSG_COMMAND = 0x02
 MSG_ENV = 0x03
 
 class CarServer:
-    def __init__(self):
+    def __init__(self, asr_url=None, mic_health_timeout=2.0):
         self.ultrasonic = Ultrasonic()
         self.pcf8591 = PCF8591()
         self.infrared = Infrared()
@@ -25,8 +26,12 @@ class CarServer:
         self.motor = Motor()
         self.audio = Audio(songs_dir=os.path.join(os.path.dirname(__file__), 'songs'))
         self.oled = FaceEngine()
+        self.mic_stream = MicStream(asr_url=asr_url)
+        self.mic_health_timeout = float(mic_health_timeout)
         self.stop_event = threading.Event()
         self.oled_thread = None
+        self.mic_watchdog_thread = None
+        self.mic_fail_safe_active = False
     
     def _update_oled_loop(self):
         def update():
@@ -42,6 +47,25 @@ class CarServer:
         self.oled_thread = threading.Thread(target=update, daemon=True)
         self.oled_thread.start()
 
+    def _start_mic_watchdog(self):
+        def watchdog():
+            while not self.stop_event.is_set():
+                healthy = self.mic_stream.is_healthy(self.mic_health_timeout)
+                if not healthy:
+                    age = time.time() - self.mic_stream.get_last_ok_ts()
+                    if not self.mic_fail_safe_active:
+                        print(f'[SAFE] MIC unhealthy age={age:.2f}s timeout={self.mic_health_timeout:.2f}s -> motor.stop()')
+                    self.motor.stop()
+                    self.mic_fail_safe_active = True
+                else:
+                    if self.mic_fail_safe_active:
+                        print('[SAFE] MIC recovered')
+                    self.mic_fail_safe_active = False
+                time.sleep(0.2)
+
+        self.mic_watchdog_thread = threading.Thread(target=watchdog, daemon=True)
+        self.mic_watchdog_thread.start()
+
     def start_all(self):
         self.stop_event.clear()
         self.ultrasonic.start()
@@ -50,14 +74,19 @@ class CarServer:
         self.camera.start()
         self.audio.start()
         self.oled.start()
+        self.mic_stream.start()
         self._update_oled_loop()
-        print('[SYS] 所有模块已启动')
-    
+        self._start_mic_watchdog()
+        print(f'[SYS] all modules started (asr_url={self.mic_stream.asr_url}, mic_timeout={self.mic_health_timeout}s)')
+
     def stop_all(self):
         self.stop_event.set()
+        if self.mic_watchdog_thread and self.mic_watchdog_thread.is_alive():
+            self.mic_watchdog_thread.join(timeout=1.0)
         if self.oled_thread and self.oled_thread.is_alive():
             self.oled_thread.join(timeout=1.0)
 
+        self.mic_stream.stop()
         self.ultrasonic.stop()
         self.pcf8591.stop()
         self.infrared.stop()
@@ -186,8 +215,12 @@ class CarServer:
             self.motor.set_servo(1, 90)
             print(f'[WS] 断开: {addr}')
 
-async def main(host, port):
-    server = CarServer()
+def resolve_asr_url(cli_url):
+    return cli_url or os.getenv('RASPBOT_ASR_URL') or os.getenv('ASR_WS_URL') or 'ws://127.0.0.1:6006/audio'
+
+
+async def main(host, port, asr_url, mic_health_timeout):
+    server = CarServer(asr_url=asr_url, mic_health_timeout=mic_health_timeout)
     server.start_all()
 
     try:
@@ -211,5 +244,7 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('--host', default='0.0.0.0')
     p.add_argument('--port', type=int, default=5001)
+    p.add_argument('--asr-url', default=None)
+    p.add_argument('--mic-health-timeout', type=float, default=float(os.getenv('MIC_HEALTH_TIMEOUT', '2')))
     args = p.parse_args()
-    asyncio.run(main(args.host, args.port))
+    asyncio.run(main(args.host, args.port, resolve_asr_url(args.asr_url), args.mic_health_timeout))
