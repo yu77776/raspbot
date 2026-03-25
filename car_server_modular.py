@@ -203,7 +203,7 @@ class CarServer:
                     await ws.send(payload)
                 except websockets.ConnectionClosed:
                     return
-                print(f"[DEBUG] Env: T={env["temp_c"]:.1f} L={env["light_lux"]} S={env["smoke"]}")
+                print(f"[DEBUG] Env: T={env['temp_c']:.1f} L={env['light_lux']} S={env['smoke']}")
                 await asyncio.sleep(0.5)
         
         try:
