@@ -10,6 +10,7 @@ from modules.motor import Motor
 from modules.audio import Audio
 from modules.oled_face import FaceEngine
 from modules.mic_stream import MicStream
+from modules.mpu6050 import MPU6050
 import websockets
 from websockets.server import WebSocketServerProtocol
 
@@ -26,6 +27,7 @@ class CarServer:
         self.motor = Motor()
         self.audio = Audio(songs_dir=os.path.join(os.path.dirname(__file__), 'songs'))
         self.oled = FaceEngine()
+        self.imu = MPU6050(addr=0x68, sample_hz=100, beta=0.08, auto_calibrate=True)
         self.mic_stream = MicStream(asr_url=asr_url)
         self.mic_health_timeout = float(mic_health_timeout)
         self.mic_enabled = str(asr_url or '').strip().lower() not in {'', 'off', 'none', 'disabled'}
@@ -72,6 +74,7 @@ class CarServer:
         self.ultrasonic.start()
         self.pcf8591.start()
         self.infrared.start()
+        self.imu.start()
         self.camera.start()
         self.audio.start()
         self.oled.start()
@@ -92,6 +95,7 @@ class CarServer:
 
         if self.mic_enabled:
             self.mic_stream.stop()
+        self.imu.stop()
         self.ultrasonic.stop()
         self.pcf8591.stop()
         self.infrared.stop()
@@ -179,6 +183,16 @@ class CarServer:
                 env = self.pcf8591.get_data()
                 dist = self.ultrasonic.get_distance()
                 track = self.infrared.get_data().get('track', [1, 1, 1, 1])
+                imu = self.imu.get_data() if self.imu.enabled else {}
+                imu_payload = None
+                if imu:
+                    imu_payload = {
+                        'roll': imu.get('roll', 0.0),
+                        'pitch': imu.get('pitch', 0.0),
+                        'yaw': imu.get('yaw', 0.0),
+                        'healthy': imu.get('healthy', False),
+                        'calibrated': imu.get('calibrated', False),
+                    }
                 
                 alarm = ''
                 if env['smoke_alarm']:
@@ -194,7 +208,7 @@ class CarServer:
                     'dist_cm': round(dist, 1),
                     'track': track,
                     'alarm': alarm,
-                    'imu': None, 'fps': fps
+                    'imu': imu_payload, 'fps': fps
                 }).encode('utf-8')
                 
                 try:
