@@ -114,7 +114,8 @@ class CarServer:
             self.audio.clear()
         
         dist = self.ultrasonic.get_distance()
-        if dist < 15:
+        if action == 'forward' and dist < 15:
+            print(f'[SAFE] block forward by ultrasonic dist={dist:.1f}cm')
             action = 'stop'
         
         self.motor.set_servo(1, servo1)
