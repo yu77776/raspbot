@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Camera capture module with optional RTMP H.264 streaming."""
+import subprocess
 import threading
 import time
 
@@ -9,12 +10,12 @@ import numpy as np
 try:
     from picamera2 import Picamera2
     from picamera2.encoders import H264Encoder
-    from picamera2.outputs import FfmpegOutput
+    from picamera2.outputs import FileOutput
     HAS_CAMERA = True
 except ImportError:
     Picamera2 = None
     H264Encoder = None
-    FfmpegOutput = None
+    FileOutput = None
     HAS_CAMERA = False
 
 
@@ -52,6 +53,7 @@ class Camera:
         self.rtmp_bitrate = 4_000_000
         self.rtmp_encoder = None
         self.rtmp_output = None
+        self.rtmp_proc = None
         self.rtmp_started = False
 
         if HAS_CAMERA:
@@ -92,8 +94,26 @@ class Camera:
     def _start_rtmp_locked(self):
         if not HAS_CAMERA or not self.picam2 or not self.rtmp_url or self.rtmp_started:
             return
+        cmd = [
+            'ffmpeg',
+            '-loglevel', 'warning',
+            '-re',
+            '-fflags', 'nobuffer',
+            '-f', 'h264',
+            '-i', '-',
+            '-an',
+            '-c:v', 'copy',
+            '-f', 'flv',
+            self.rtmp_url,
+        ]
+        self.rtmp_proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
         self.rtmp_encoder = H264Encoder(bitrate=self.rtmp_bitrate, repeat=True, framerate=self.framerate)
-        self.rtmp_output = FfmpegOutput(self.rtmp_url, audio=False)
+        self.rtmp_output = FileOutput(self.rtmp_proc.stdin)
         self.picam2.start_encoder(self.rtmp_encoder, self.rtmp_output, name='main')
         self.rtmp_started = True
         print(f'[SRS] RTMP streaming started: {self.rtmp_url}')
@@ -109,9 +129,21 @@ class Camera:
             if self.rtmp_output:
                 self.rtmp_output.stop()
         except Exception as e:
-            print(f'[SRS] stop ffmpeg output error: {e}')
+            print(f'[SRS] stop file output error: {e}')
+        try:
+            if self.rtmp_proc:
+                self.rtmp_proc.terminate()
+                self.rtmp_proc.wait(timeout=2.0)
+        except Exception as e:
+            print(f'[SRS] stop ffmpeg process error: {e}')
+            try:
+                if self.rtmp_proc:
+                    self.rtmp_proc.kill()
+            except Exception:
+                pass
         self.rtmp_encoder = None
         self.rtmp_output = None
+        self.rtmp_proc = None
         self.rtmp_started = False
         print('[SRS] RTMP streaming stopped')
 
