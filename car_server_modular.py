@@ -11,6 +11,7 @@ from modules.audio import Audio
 from modules.oled_face import FaceEngine
 from modules.mic_stream import MicStream
 from modules.mpu6050 import MPU6050
+from modules.video_srs_stream import VideoSrsStream
 import websockets
 from websockets.server import WebSocketServerProtocol
 
@@ -19,15 +20,23 @@ MSG_COMMAND = 0x02
 MSG_ENV = 0x03
 
 class CarServer:
-    def __init__(self, asr_url=None, mic_health_timeout=2.0):
+    def __init__(self, asr_url=None, mic_health_timeout=2.0, srs_url='', srs_bitrate=4_000_000):
         self.ultrasonic = Ultrasonic()
         self.pcf8591 = PCF8591()
         self.infrared = Infrared()
-        self.camera = Camera()
+        self.camera = Camera(
+            width=int(os.getenv('RASPBOT_WS_WIDTH', '640')),
+            height=int(os.getenv('RASPBOT_WS_HEIGHT', '480')),
+            quality=int(os.getenv('RASPBOT_WS_JPEG_QUALITY', '80')),
+            stream_width=int(os.getenv('RASPBOT_SRS_WIDTH', '1280')),
+            stream_height=int(os.getenv('RASPBOT_SRS_HEIGHT', '720')),
+            framerate=int(os.getenv('RASPBOT_CAMERA_FPS', '20')),
+        )
         self.motor = Motor()
         self.audio = Audio(songs_dir=os.path.join(os.path.dirname(__file__), 'songs'))
         self.oled = FaceEngine()
         self.imu = MPU6050(addr=0x68, sample_hz=100, beta=0.08, auto_calibrate=True)
+        self.video_srs = VideoSrsStream(self.camera, rtmp_url=srs_url, bitrate=srs_bitrate)
         resolved_asr = str(asr_url or '').strip()
         self.mic_auto_mode = resolved_asr.lower() == 'auto'
         mic_init_url = 'ws://127.0.0.1:6006/audio' if self.mic_auto_mode else resolved_asr
@@ -89,6 +98,7 @@ class CarServer:
         self.infrared.start()
         self.imu.start()
         self.camera.start()
+        self.video_srs.start()
         self.audio.start()
         self.oled.start()
         if self.mic_enabled:
@@ -110,6 +120,7 @@ class CarServer:
 
         if self.mic_enabled:
             self.mic_stream.stop()
+        self.video_srs.stop()
         self.imu.stop()
         self.ultrasonic.stop()
         self.pcf8591.stop()
@@ -292,8 +303,13 @@ def resolve_asr_url(cli_url):
     print('[MIC] auto mode: ASR url will follow connected PC websocket client IP')
     return 'auto'
 
-async def main(host, port, asr_url, mic_health_timeout):
-    server = CarServer(asr_url=asr_url, mic_health_timeout=mic_health_timeout)
+async def main(host, port, asr_url, mic_health_timeout, srs_url, srs_bitrate):
+    server = CarServer(
+        asr_url=asr_url,
+        mic_health_timeout=mic_health_timeout,
+        srs_url=srs_url,
+        srs_bitrate=srs_bitrate,
+    )
     server.start_all()
 
     try:
@@ -319,7 +335,9 @@ if __name__ == '__main__':
     p.add_argument('--port', type=int, default=int(os.getenv('RASPBOT_CAR_PORT', '5001')))
     p.add_argument('--asr-url', default=os.getenv('RASPBOT_ASR_URL', None))
     p.add_argument('--mic-health-timeout', type=float, default=float(os.getenv('MIC_HEALTH_TIMEOUT', '2')))
+    p.add_argument('--srs-url', default=os.getenv('RASPBOT_SRS_URL', ''))
+    p.add_argument('--srs-bitrate', type=int, default=int(os.getenv('RASPBOT_SRS_BITRATE', '4000000')))
     p.add_argument('--disable-mic-stream', action='store_true')
     args = p.parse_args()
     asr_url = '' if args.disable_mic_stream else resolve_asr_url(args.asr_url)
-    asyncio.run(main(args.host, args.port, asr_url, args.mic_health_timeout))
+    asyncio.run(main(args.host, args.port, asr_url, args.mic_health_timeout, args.srs_url, args.srs_bitrate))
