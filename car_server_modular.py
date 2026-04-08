@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 import sys, os, asyncio, json, argparse, threading, time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -28,9 +28,12 @@ class CarServer:
         self.audio = Audio(songs_dir=os.path.join(os.path.dirname(__file__), 'songs'))
         self.oled = FaceEngine()
         self.imu = MPU6050(addr=0x68, sample_hz=100, beta=0.08, auto_calibrate=True)
-        self.mic_stream = MicStream(asr_url=asr_url)
+        resolved_asr = str(asr_url or '').strip()
+        self.mic_auto_mode = resolved_asr.lower() == 'auto'
+        mic_init_url = 'ws://127.0.0.1:6006/audio' if self.mic_auto_mode else resolved_asr
+        self.mic_stream = MicStream(asr_url=mic_init_url)
         self.mic_health_timeout = float(mic_health_timeout)
-        self.mic_enabled = str(asr_url or '').strip().lower() not in {'', 'off', 'none', 'disabled'}
+        self.mic_enabled = resolved_asr.lower() not in {'', 'off', 'none', 'disabled'}
         self.stop_event = threading.Event()
         self.oled_thread = None
         self.mic_watchdog_thread = None
@@ -69,6 +72,16 @@ class CarServer:
         self.mic_watchdog_thread = threading.Thread(target=watchdog, daemon=True)
         self.mic_watchdog_thread.start()
 
+    def _start_mic_pipeline(self, asr_url=None):
+        if not self.mic_enabled:
+            return
+        if asr_url:
+            self.mic_stream.asr_url = asr_url
+        if not self.mic_stream.started:
+            self.mic_stream.start()
+        if not self.mic_watchdog_thread or not self.mic_watchdog_thread.is_alive():
+            self._start_mic_watchdog()
+
     def start_all(self):
         self.stop_event.clear()
         self.ultrasonic.start()
@@ -79,8 +92,10 @@ class CarServer:
         self.audio.start()
         self.oled.start()
         if self.mic_enabled:
-            self.mic_stream.start()
-            self._start_mic_watchdog()
+            if self.mic_auto_mode:
+                print('[MIC] auto mode: waiting for PC websocket client to resolve ASR url')
+            else:
+                self._start_mic_pipeline()
         else:
             print('[MIC] disabled')
         self._update_oled_loop()
@@ -152,7 +167,22 @@ class CarServer:
 
     async def handle_client(self, ws: WebSocketServerProtocol):
         addr = ws.remote_address
-        print(f'[WS] 连接: {addr}')
+        print(f'[WS] connected: {addr}')
+        if self.mic_enabled and self.mic_auto_mode:
+            peer_ip = addr[0] if isinstance(addr, tuple) and len(addr) >= 1 else None
+            if peer_ip:
+                asr_port = os.getenv('RASPBOT_ASR_PORT', '6006')
+                asr_path = os.getenv('RASPBOT_ASR_PATH', '/audio')
+                if not asr_path.startswith('/'):
+                    asr_path = '/' + asr_path
+                auto_url = f'ws://{peer_ip}:{asr_port}{asr_path}'
+                if self.mic_stream.asr_url != auto_url and self.mic_stream.started:
+                    print(f'[MIC] PC changed, restart mic stream: {self.mic_stream.asr_url} -> {auto_url}')
+                    self.mic_stream.stop()
+                print(f'[MIC] auto ASR url from connected PC: {auto_url}')
+                self._start_mic_pipeline(asr_url=auto_url)
+            else:
+                print('[MIC] auto mode failed: cannot parse client ip from websocket peer')
         last_seq = -1
         
         async def send_video():
@@ -176,7 +206,7 @@ class CarServer:
                     elif isinstance(msg, str):
                         self.execute_command(json.loads(msg))
                 except Exception as e:
-                    print(f'[WS] 命令错误: {e}')
+                    print(f'[WS] command error: {e}')
         
         async def send_env():
             while True:
@@ -225,23 +255,42 @@ class CarServer:
         finally:
             self.motor.stop()
             self.motor.set_servo(1, 90)
-            print(f'[WS] 断开: {addr}')
+            print(f'[WS] disconnected: {addr}')
 
 def resolve_asr_url(cli_url):
+    def _clean(v):
+        return str(v or '').strip()
+
+    cli_url = _clean(cli_url)
     if cli_url:
+        if cli_url.lower() == 'auto':
+            print('[MIC] use ASR auto mode from CLI')
+            return 'auto'
         print(f'[MIC] use ASR from CLI: {cli_url}')
         return cli_url
 
-    legacy_env_url = os.getenv('RASPBOT_ASR_URL') or os.getenv('ASR_WS_URL')
-    if legacy_env_url:
-        print(f'[MIC] ignore legacy ASR env url for one-click start: {legacy_env_url}')
+    env_url = _clean(os.getenv('RASPBOT_ASR_URL') or os.getenv('ASR_WS_URL'))
+    if env_url:
+        if env_url.lower() == 'auto':
+            print('[MIC] use ASR auto mode from env')
+            return 'auto'
+        print(f'[MIC] use ASR from env: {env_url}')
+        return env_url
 
-    pc_ip = os.getenv('RASPBOT_PC_IP') or os.getenv('ASR_HOST') or '10.120.142.133'
-    asr_port = os.getenv('RASPBOT_ASR_PORT', '6006')
-    auto_url = f'ws://{pc_ip}:{asr_port}/audio'
-    print(f'[MIC] auto ASR url from PC IP: {auto_url}')
-    return auto_url
+    pc_ip = _clean(os.getenv('RASPBOT_PC_IP') or os.getenv('ASR_HOST'))
+    if pc_ip in {'0.0.0.0', '127.0.0.1', 'localhost'}:
+        pc_ip = ''
+    asr_port = _clean(os.getenv('RASPBOT_ASR_PORT') or '6006')
+    asr_path = _clean(os.getenv('RASPBOT_ASR_PATH') or '/audio')
+    if not asr_path.startswith('/'):
+        asr_path = '/' + asr_path
+    if pc_ip:
+        auto_url = f'ws://{pc_ip}:{asr_port}{asr_path}'
+        print(f'[MIC] auto ASR url from configured PC IP: {auto_url}')
+        return auto_url
 
+    print('[MIC] auto mode: ASR url will follow connected PC websocket client IP')
+    return 'auto'
 
 async def main(host, port, asr_url, mic_health_timeout):
     server = CarServer(asr_url=asr_url, mic_health_timeout=mic_health_timeout)
@@ -266,9 +315,9 @@ async def main(host, port, asr_url, mic_health_timeout):
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
-    p.add_argument('--host', default='0.0.0.0')
-    p.add_argument('--port', type=int, default=5001)
-    p.add_argument('--asr-url', default=None)
+    p.add_argument('--host', default=os.getenv('RASPBOT_CAR_BIND', '0.0.0.0'))
+    p.add_argument('--port', type=int, default=int(os.getenv('RASPBOT_CAR_PORT', '5001')))
+    p.add_argument('--asr-url', default=os.getenv('RASPBOT_ASR_URL', None))
     p.add_argument('--mic-health-timeout', type=float, default=float(os.getenv('MIC_HEALTH_TIMEOUT', '2')))
     p.add_argument('--disable-mic-stream', action='store_true')
     args = p.parse_args()
