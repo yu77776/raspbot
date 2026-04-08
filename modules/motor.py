@@ -42,6 +42,18 @@ class Motor:
     def backward(self, speed):
         if HAS_CAR:
             self.car.Car_Back(speed, speed)
+
+    def left(self, speed, inner_ratio=0.5):
+        if HAS_CAR:
+            s = int(max(0, min(255, speed)))
+            inner = int(max(0, min(255, s * float(inner_ratio))))
+            self.car.Car_Left(inner, s)
+
+    def right(self, speed, inner_ratio=0.5):
+        if HAS_CAR:
+            s = int(max(0, min(255, speed)))
+            inner = int(max(0, min(255, s * float(inner_ratio))))
+            self.car.Car_Right(s, inner)
     
     def spin_left(self, speed):
         if HAS_CAR:

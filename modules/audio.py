@@ -5,10 +5,10 @@ import time
 import threading
 
 try:
-    import pygame
+    import pygame  # type: ignore[import-not-found]
     pygame.mixer.init()
     HAS_AUDIO = True
-except Exception:
+except ImportError:
     HAS_AUDIO = False
 
 class Audio:
@@ -52,7 +52,7 @@ class Audio:
     
     def _tts(self, text):
         try:
-            import pyttsx3
+            import pyttsx3  # type: ignore[import-not-found]
             with self.tts_lock:
                 if self.tts_engine is None:
                     self.tts_engine = pyttsx3.init()

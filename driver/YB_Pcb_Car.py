@@ -80,15 +80,19 @@ class YB_Pcb_Car(object):
 
     def Car_Left(self, speed1, speed2):
         try:
-            self.Ctrl_Car(0, speed1, 1, speed2)
+            # Differential steering while moving forward.
+            # speed1 = left wheel, speed2 = right wheel
+            self.Ctrl_Car(1, speed1, 1, speed2)
         except:
-            print ('Car_Spin_Left I2C error')
+            print ('Car_Left I2C error')
 
     def Car_Right(self, speed1, speed2):
         try:
-            self.Ctrl_Car(1, speed1, 0, speed2)
+            # Differential steering while moving forward.
+            # speed1 = left wheel, speed2 = right wheel
+            self.Ctrl_Car(1, speed1, 1, speed2)
         except:
-            print ('Car_Spin_Left I2C error')
+            print ('Car_Right I2C error')
 
     def Car_Spin_Left(self, speed1, speed2):
         try:
