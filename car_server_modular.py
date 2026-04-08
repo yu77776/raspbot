@@ -303,6 +303,17 @@ def resolve_asr_url(cli_url):
     print('[MIC] auto mode: ASR url will follow connected PC websocket client IP')
     return 'auto'
 
+
+def resolve_srs_url(cli_url):
+    cli_url = str(cli_url or '').strip()
+    if cli_url:
+        print(f'[SRS] use RTMP from CLI/env: {cli_url}')
+        return cli_url
+
+    default_url = 'rtmp://47.108.164.190/live/raspbot'
+    print(f'[SRS] use default RTMP url: {default_url}')
+    return default_url
+
 async def main(host, port, asr_url, mic_health_timeout, srs_url, srs_bitrate):
     server = CarServer(
         asr_url=asr_url,
@@ -340,4 +351,5 @@ if __name__ == '__main__':
     p.add_argument('--disable-mic-stream', action='store_true')
     args = p.parse_args()
     asr_url = '' if args.disable_mic_stream else resolve_asr_url(args.asr_url)
-    asyncio.run(main(args.host, args.port, asr_url, args.mic_health_timeout, args.srs_url, args.srs_bitrate))
+    srs_url = resolve_srs_url(args.srs_url)
+    asyncio.run(main(args.host, args.port, asr_url, args.mic_health_timeout, srs_url, args.srs_bitrate))
