@@ -1,5 +1,7 @@
 ﻿#!/usr/bin/env python3
 import sys, os, asyncio, json, argparse, threading, time
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from modules.ultrasonic import Ultrasonic
@@ -17,6 +19,99 @@ from websockets.server import WebSocketServerProtocol
 MSG_VIDEO = 0x01
 MSG_COMMAND = 0x02
 MSG_ENV = 0x03
+
+
+def _clamp_int(value: Any, min_v: int, max_v: int, default: int) -> int:
+    try:
+        return int(max(min_v, min(max_v, int(value))))
+    except Exception:
+        return int(default)
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+    return False
+
+
+@dataclass
+class CommandPacket:
+    action: str = 'stop'
+    servo_angle: int = 90
+    servo_angle2: int = 90
+    speed: int = 80
+    left_speed: int = 80
+    right_speed: int = 80
+    detecting: bool = False
+    play_song: str = ''
+    stop_audio: bool = False
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]):
+        if not isinstance(payload, dict):
+            return cls()
+        speed = _clamp_int(payload.get('speed', 80), 0, 255, 80)
+        return cls(
+            action=str(payload.get('action', 'stop') or 'stop'),
+            servo_angle=_clamp_int(payload.get('servo_angle', 90), 0, 180, 90),
+            servo_angle2=_clamp_int(payload.get('servo_angle2', 90), 0, 180, 90),
+            speed=speed,
+            left_speed=_clamp_int(payload.get('left_speed', speed), 0, 255, speed),
+            right_speed=_clamp_int(payload.get('right_speed', speed), 0, 255, speed),
+            detecting=_as_bool(payload.get('detecting', False)),
+            play_song=str(payload.get('play_song', '') or '').strip(),
+            stop_audio=_as_bool(payload.get('stop_audio', False)),
+        )
+
+
+@dataclass
+class ImuPacket:
+    roll: float = 0.0
+    pitch: float = 0.0
+    yaw: float = 0.0
+    healthy: bool = False
+    calibrated: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'roll': self.roll,
+            'pitch': self.pitch,
+            'yaw': self.yaw,
+            'healthy': self.healthy,
+            'calibrated': self.calibrated,
+        }
+
+
+@dataclass
+class EnvPacket:
+    light: int
+    light_lux: int
+    temp_c: float
+    smoke: int
+    volume: int
+    dist_cm: float
+    track: List[int]
+    alarm: str
+    imu: Optional[ImuPacket]
+    fps: int
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'light': self.light,
+            'light_lux': self.light_lux,
+            'temp_c': self.temp_c,
+            'smoke': self.smoke,
+            'volume': self.volume,
+            'dist_cm': self.dist_cm,
+            'track': self.track,
+            'alarm': self.alarm,
+            'imu': self.imu.to_dict() if self.imu else None,
+            'fps': self.fps,
+        }
 
 class CarServer:
     def __init__(self, asr_url=None, mic_health_timeout=2.0):
@@ -43,14 +138,47 @@ class CarServer:
         self.oled_thread = None
         self.mic_watchdog_thread = None
         self.mic_fail_safe_active = False
+
+    def _build_env_packet(self):
+        env = self.pcf8591.get_data()
+        dist = self.ultrasonic.get_distance()
+        track = self.infrared.get_data().get('track', [1, 1, 1, 1])
+        imu_data = self.imu.get_data() if self.imu.enabled else {}
+        imu_payload = None
+        if imu_data:
+            imu_payload = ImuPacket(
+                roll=float(imu_data.get('roll', 0.0)),
+                pitch=float(imu_data.get('pitch', 0.0)),
+                yaw=float(imu_data.get('yaw', 0.0)),
+                healthy=bool(imu_data.get('healthy', False)),
+                calibrated=bool(imu_data.get('calibrated', False)),
+            )
+        alarm = 'smoke' if env.get('smoke_alarm') else ''
+        return EnvPacket(
+            light=int(env.get('light', 0)),
+            light_lux=int(env.get('light_lux', 0)),
+            temp_c=float(env.get('temp_c', 0.0)),
+            smoke=int(env.get('smoke', 0)),
+            volume=int(env.get('volume', 0)),
+            dist_cm=round(float(dist), 1),
+            track=track,
+            alarm=alarm,
+            imu=imu_payload,
+            fps=int(self.camera.get_fps()),
+        )
     
     def _update_oled_loop(self):
         def update():
             while not self.stop_event.is_set():
                 try:
-                    env = self.pcf8591.get_data()
-                    dist = self.ultrasonic.get_distance()
-                    self.oled.set_env_data({"temp_c": env["temp_c"], "light_lux": env["light_lux"], "smoke": env["smoke"], "volume": env["volume"], "dist_cm": round(dist, 1)})
+                    env = self._build_env_packet()
+                    self.oled.set_env_data({
+                        "temp_c": env.temp_c,
+                        "light_lux": env.light_lux,
+                        "smoke": env.smoke,
+                        "volume": env.volume,
+                        "dist_cm": env.dist_cm,
+                    })
                 except Exception as e:
                     print(f'[OLED] update error: {e}')
                 time.sleep(0.5)
@@ -123,18 +251,20 @@ class CarServer:
         self.audio.stop()
         self.oled.stop()
     
-    def execute_command(self, cmd):
-        servo1 = int(max(0, min(180, cmd.get('servo_angle', 90))))
-        servo2 = int(max(0, min(180, cmd.get('servo_angle2', 90))))
-        speed = int(max(0, min(255, cmd.get('speed', 80))))
+    def execute_command(self, cmd: CommandPacket):
+        if not isinstance(cmd, CommandPacket):
+            cmd = CommandPacket.from_dict(cmd)
+        servo1 = cmd.servo_angle
+        servo2 = cmd.servo_angle2
+        speed = cmd.speed
         env = self.pcf8591.get_data()
         volume = env.get("volume", 50)
         self.audio.set_volume(volume)
-        action = cmd.get('action', 'stop')
+        action = cmd.action
         
-        if cmd.get('play_song'):
-            self.audio.enqueue('song', cmd['play_song'])
-        if cmd.get('stop_audio'):
+        if cmd.play_song:
+            self.audio.enqueue('song', cmd.play_song)
+        if cmd.stop_audio:
             self.audio.clear()
         
         dist = self.ultrasonic.get_distance()
@@ -147,8 +277,8 @@ class CarServer:
         self.oled.set_pan(servo1)
         
         if action == 'forward':
-            l = int(max(0, min(255, cmd.get('left_speed', speed))))
-            r = int(max(0, min(255, cmd.get('right_speed', speed))))
+            l = cmd.left_speed
+            r = cmd.right_speed
             self.motor.forward(l, r)
         elif action == 'left':
             self.motor.left(speed)
@@ -163,7 +293,7 @@ class CarServer:
         else:
             self.motor.stop()
         
-        if cmd.get('detecting'):
+        if cmd.detecting:
             self.oled.set_state('env')
         else:
             self.oled.set_state('idle')
@@ -209,52 +339,26 @@ class CarServer:
         async def recv_commands():
             async for msg in ws:
                 try:
+                    cmd_payload = None
                     if isinstance(msg, bytes) and len(msg) > 1 and msg[0] == MSG_COMMAND:
-                        cmd = json.loads(msg[1:].decode('utf-8'))
-                        self.execute_command(cmd)
+                        cmd_payload = json.loads(msg[1:].decode('utf-8'))
                     elif isinstance(msg, str):
-                        self.execute_command(json.loads(msg))
+                        cmd_payload = json.loads(msg)
+                    if cmd_payload is not None:
+                        self.execute_command(CommandPacket.from_dict(cmd_payload))
                 except Exception as e:
                     print(f'[WS] command error: {e}')
         
         async def send_env():
             while True:
-                env = self.pcf8591.get_data()
-                dist = self.ultrasonic.get_distance()
-                track = self.infrared.get_data().get('track', [1, 1, 1, 1])
-                imu = self.imu.get_data() if self.imu.enabled else {}
-                imu_payload = None
-                if imu:
-                    imu_payload = {
-                        'roll': imu.get('roll', 0.0),
-                        'pitch': imu.get('pitch', 0.0),
-                        'yaw': imu.get('yaw', 0.0),
-                        'healthy': imu.get('healthy', False),
-                        'calibrated': imu.get('calibrated', False),
-                    }
-                
-                alarm = ''
-                if env['smoke_alarm']:
-                    alarm = 'smoke'
-                
-                fps = self.camera.get_fps()
-                payload = bytes([MSG_ENV]) + json.dumps({
-                    'light': env['light'],
-                    'light_lux': env['light_lux'],
-                    'temp_c': env['temp_c'],
-                    'smoke': env['smoke'],
-                    'volume': env['volume'],
-                    'dist_cm': round(dist, 1),
-                    'track': track,
-                    'alarm': alarm,
-                    'imu': imu_payload, 'fps': fps
-                }).encode('utf-8')
+                env_packet = self._build_env_packet()
+                payload = bytes([MSG_ENV]) + json.dumps(env_packet.to_dict()).encode('utf-8')
                 
                 try:
                     await ws.send(payload)
                 except websockets.ConnectionClosed:
                     return
-                print(f"[DEBUG] Env: T={env['temp_c']:.1f} L={env['light_lux']} S={env['smoke']}")
+                print(f"[DEBUG] Env: T={env_packet.temp_c:.1f} L={env_packet.light_lux} S={env_packet.smoke}")
                 await asyncio.sleep(0.5)
         
         try:
