@@ -138,6 +138,8 @@ class CarServer:
         self.oled_thread = None
         self.mic_watchdog_thread = None
         self.mic_fail_safe_active = False
+        self.manual_override_until = 0.0
+        self.manual_override_sec = float(os.getenv('RASPBOT_MANUAL_OVERRIDE_SEC', '1.2'))
 
     def _build_env_packet(self):
         env = self.pcf8591.get_data()
@@ -345,6 +347,16 @@ class CarServer:
                     elif isinstance(msg, str):
                         cmd_payload = json.loads(msg)
                     if cmd_payload is not None:
+                        source = str(cmd_payload.get('source', '') or '').strip().lower() \
+                            if isinstance(cmd_payload, dict) else ''
+                        is_app_source = source == 'app'
+                        now = time.monotonic()
+                        if is_app_source:
+                            self.manual_override_until = now + self.manual_override_sec
+                        elif now < self.manual_override_until:
+                            # During manual override window, ignore non-app commands
+                            # to prevent APP servo/manual control from being overwritten.
+                            continue
                         self.execute_command(CommandPacket.from_dict(cmd_payload))
                 except Exception as e:
                     print(f'[WS] command error: {e}')
