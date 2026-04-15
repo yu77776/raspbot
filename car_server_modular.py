@@ -286,6 +286,10 @@ class CarServer:
 
     def start_all(self):
         self.stop_event.clear()
+        # Always home servos on startup so hardware state is deterministic.
+        self.motor.stop()
+        self.motor.center_servos(90, 90, force=True)
+        time.sleep(0.12)
         self.ultrasonic.start()
         self.pcf8591.start()
         self.infrared.start()
@@ -446,7 +450,7 @@ class CarServer:
             pass
         finally:
             self.motor.stop()
-            self.motor.set_servo(1, 90)
+            self.motor.center_servos(90, 90, force=True)
             print(f'[WS] disconnected: {addr}')
 
 def resolve_asr_url(cli_url):

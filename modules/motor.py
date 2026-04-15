@@ -23,6 +23,15 @@ class Motor:
         self.dead_band = 1
         print(f'[MOTOR] init done (enabled={HAS_CAR})')
 
+    def _write_servo(self, servo_id, angle):
+        if not HAS_CAR:
+            return
+        self.car.Ctrl_Servo(int(servo_id), int(angle))
+        if servo_id == 1:
+            self.last_servo1 = int(angle)
+        elif servo_id == 2:
+            self.last_servo2 = int(angle)
+
     def set_servo(self, servo_id, angle):
         if not HAS_CAR:
             return
@@ -30,12 +39,24 @@ class Motor:
         with self.lock:
             if servo_id == 1:
                 if abs(angle - self.last_servo1) >= self.dead_band:
-                    self.car.Ctrl_Servo(1, angle)
-                    self.last_servo1 = angle
+                    self._write_servo(1, angle)
             elif servo_id == 2:
                 if abs(angle - self.last_servo2) >= self.dead_band:
-                    self.car.Ctrl_Servo(2, angle)
-                    self.last_servo2 = angle
+                    self._write_servo(2, angle)
+
+    def center_servos(self, angle1=90, angle2=90, force=True):
+        """Center both servos. force=True bypasses dead-band filtering."""
+        a1 = int(max(0, min(180, angle1)))
+        a2 = int(max(0, min(180, angle2)))
+        with self.lock:
+            if force:
+                self._write_servo(1, a1)
+                self._write_servo(2, a2)
+            else:
+                if abs(a1 - self.last_servo1) >= self.dead_band:
+                    self._write_servo(1, a1)
+                if abs(a2 - self.last_servo2) >= self.dead_band:
+                    self._write_servo(2, a2)
 
     def forward(self, left, right):
         if HAS_CAR:
