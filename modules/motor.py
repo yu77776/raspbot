@@ -1,7 +1,8 @@
-#!/usr/bin/env python3
-"""电机和舵机控制模块"""
-import sys
+﻿#!/usr/bin/env python3
+"""Motor and servo control module."""
+
 import os
+import sys
 import threading
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'driver'))
@@ -12,6 +13,7 @@ try:
 except ImportError:
     HAS_CAR = False
 
+
 class Motor:
     def __init__(self):
         self.car = YB_Pcb_Car() if HAS_CAR else None
@@ -19,8 +21,8 @@ class Motor:
         self.last_servo2 = 90
         self.lock = threading.Lock()
         self.dead_band = 1
-        print(f'[MOTOR] 初始化完成 (enabled={HAS_CAR})')
-    
+        print(f'[MOTOR] init done (enabled={HAS_CAR})')
+
     def set_servo(self, servo_id, angle):
         if not HAS_CAR:
             return
@@ -34,11 +36,11 @@ class Motor:
                 if abs(angle - self.last_servo2) >= self.dead_band:
                     self.car.Ctrl_Servo(2, angle)
                     self.last_servo2 = angle
-    
+
     def forward(self, left, right):
         if HAS_CAR:
             self.car.Car_Run(left, right)
-    
+
     def backward(self, speed):
         if HAS_CAR:
             self.car.Car_Back(speed, speed)
@@ -54,18 +56,19 @@ class Motor:
             s = int(max(0, min(255, speed)))
             inner = int(max(0, min(255, s * float(inner_ratio))))
             self.car.Car_Right(s, inner)
-    
+
     def spin_left(self, speed):
         if HAS_CAR:
             self.car.Car_Spin_Left(speed, speed)
-    
+
     def spin_right(self, speed):
         if HAS_CAR:
             self.car.Car_Spin_Right(speed, speed)
-    
+
     def stop(self):
         if HAS_CAR:
             self.car.Car_Stop()
+
 
 if __name__ == '__main__':
     print('Testing motor module...')

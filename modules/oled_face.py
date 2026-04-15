@@ -1,5 +1,9 @@
 ﻿#!/usr/bin/env python3
-import time, threading, random
+
+import random
+import threading
+import time
+
 try:
     from luma.core.interface.serial import i2c as luma_i2c
     from luma.oled.device import ssd1306
@@ -73,7 +77,6 @@ class FaceEngine:
         self._draw_text_mixed(draw, (2, y), label)
         self._draw_text_mixed(draw, (value_x, y), value)
 
-
     def set_state(self, s):
         with self.lock:
             self.state = s
@@ -122,16 +125,16 @@ class FaceEngine:
         if page == 0:
             t = d.get('temp_c', 0)
             l = d.get('light_lux', 0)
-            self._draw_kv_row(draw, y1, '娓╁害: ', f'{t:.1f}C')
-            self._draw_kv_row(draw, y2, '鍏夌収: ', f'{l}lux')
+            self._draw_kv_row(draw, y1, 'Temp:', f'{t:.1f}C')
+            self._draw_kv_row(draw, y2, 'Light:', f'{l}lux')
         elif page == 1:
             s = d.get('smoke', 0)
             dist = d.get('dist_cm', 0)
-            self._draw_kv_row(draw, y1, '鐑熼浘: ', f'{s}')
-            self._draw_kv_row(draw, y2, '璺濈: ', f'{dist:.0f}cm')
+            self._draw_kv_row(draw, y1, 'Smoke:', f'{s}')
+            self._draw_kv_row(draw, y2, 'Dist:', f'{dist:.0f}cm')
         else:
             v = d.get('volume', 0)
-            self._draw_kv_row(draw, 9, '闊抽噺: ', f'{v}%')
+            self._draw_kv_row(draw, 9, 'Volume:', f'{v}%')
 
         self.device.display(img)
 
@@ -176,4 +179,3 @@ class FaceEngine:
 
     def stop(self):
         self.stop_event.set()
-

@@ -1,8 +1,9 @@
 ﻿#!/usr/bin/env python3
-"""闊抽鎾斁妯″潡"""
+"""Audio playback module."""
+
 import os
-import time
 import threading
+import time
 
 try:
     import pygame  # type: ignore[import-not-found]
@@ -10,6 +11,7 @@ try:
     HAS_AUDIO = True
 except ImportError:
     HAS_AUDIO = False
+
 
 class Audio:
     def __init__(self, songs_dir='songs'):
@@ -22,8 +24,8 @@ class Audio:
         self.tts_lock = threading.Lock()
         self.thread = None
         self.started = False
-        print(f'[AUDIO] 鍒濆鍖栧畬鎴?(enabled={HAS_AUDIO})')
-    
+        print(f'[AUDIO] init done (enabled={HAS_AUDIO})')
+
     def set_volume(self, vol):
         if HAS_AUDIO:
             pygame.mixer.music.set_volume(vol / 100.0)
@@ -31,13 +33,13 @@ class Audio:
     def enqueue(self, kind, content):
         with self.lock:
             self.queue.append((kind, content))
-    
+
     def _play_file(self, filename):
         if not HAS_AUDIO:
             return
         path = os.path.join(self.songs_dir, filename)
         if not os.path.exists(path):
-            print(f'[AUDIO] 鏂囦欢涓嶅瓨鍦? {path}')
+            print(f'[AUDIO] file not found: {path}')
             return
         try:
             pygame.mixer.music.load(path)
@@ -48,8 +50,8 @@ class Audio:
                     break
                 time.sleep(0.1)
         except Exception as e:
-            print(f'[AUDIO] 鎾斁閿欒: {e}')
-    
+            print(f'[AUDIO] playback error: {e}')
+
     def _tts(self, text):
         try:
             import pyttsx3  # type: ignore[import-not-found]
@@ -60,8 +62,8 @@ class Audio:
                 self.tts_engine.say(text)
                 self.tts_engine.runAndWait()
         except Exception as e:
-            print(f'[AUDIO] TTS閿欒: {e}')
-    
+            print(f'[AUDIO] tts error: {e}')
+
     def _run(self):
         while not self.stop_event.is_set():
             task = None
@@ -77,7 +79,7 @@ class Audio:
                     self._tts(content)
             else:
                 time.sleep(0.1)
-    
+
     def start(self):
         if self.started and self.thread and self.thread.is_alive():
             return
@@ -85,28 +87,28 @@ class Audio:
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
         self.started = True
-    
+
     def stop(self):
         self.stop_event.set()
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=1.0)
         self.started = False
-    
+
     def clear(self):
         self.stop_flag.set()
         with self.lock:
             self.queue.clear()
 
+
 if __name__ == '__main__':
-    print('=== 闊抽娴嬭瘯 ===')
-    
+    print('=== audio test ===')
+
     audio = Audio()
     audio.start()
-    
-    print('娴嬭瘯 TTS...')
+
+    print('test tts...')
     audio.enqueue('tts', 'Hello, this is a test')
     time.sleep(3)
-    
-    audio.stop()
-    print('娴嬭瘯瀹屾垚')
 
+    audio.stop()
+    print('test done')
