@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
-"""音频播放模块"""
+﻿#!/usr/bin/env python3
+"""闊抽鎾斁妯″潡"""
 import os
 import time
 import threading
@@ -22,7 +22,7 @@ class Audio:
         self.tts_lock = threading.Lock()
         self.thread = None
         self.started = False
-        print(f'[AUDIO] 初始化完成 (enabled={HAS_AUDIO})')
+        print(f'[AUDIO] 鍒濆鍖栧畬鎴?(enabled={HAS_AUDIO})')
     
     def set_volume(self, vol):
         if HAS_AUDIO:
@@ -37,7 +37,7 @@ class Audio:
             return
         path = os.path.join(self.songs_dir, filename)
         if not os.path.exists(path):
-            print(f'[AUDIO] 文件不存在: {path}')
+            print(f'[AUDIO] 鏂囦欢涓嶅瓨鍦? {path}')
             return
         try:
             pygame.mixer.music.load(path)
@@ -48,7 +48,7 @@ class Audio:
                     break
                 time.sleep(0.1)
         except Exception as e:
-            print(f'[AUDIO] 播放错误: {e}')
+            print(f'[AUDIO] 鎾斁閿欒: {e}')
     
     def _tts(self, text):
         try:
@@ -60,7 +60,7 @@ class Audio:
                 self.tts_engine.say(text)
                 self.tts_engine.runAndWait()
         except Exception as e:
-            print(f'[AUDIO] TTS错误: {e}')
+            print(f'[AUDIO] TTS閿欒: {e}')
     
     def _run(self):
         while not self.stop_event.is_set():
@@ -98,17 +98,15 @@ class Audio:
             self.queue.clear()
 
 if __name__ == '__main__':
-    import sys
-    print('=== 音频测试 ===')
+    print('=== 闊抽娴嬭瘯 ===')
     
     audio = Audio()
     audio.start()
     
-    print('测试 TTS...')
+    print('娴嬭瘯 TTS...')
     audio.enqueue('tts', 'Hello, this is a test')
-    
-    import time
     time.sleep(3)
     
     audio.stop()
-    print('测试完成')
+    print('娴嬭瘯瀹屾垚')
+

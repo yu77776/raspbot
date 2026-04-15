@@ -1,7 +1,7 @@
 ﻿#!/usr/bin/env python3
 import sys, os, asyncio, json, argparse, threading, time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from modules.ultrasonic import Ultrasonic
@@ -93,6 +93,8 @@ class EnvPacket:
     temp_c: float
     smoke: int
     volume: int
+    crying: bool
+    cry_score: int
     dist_cm: float
     track: List[int]
     alarm: str
@@ -106,12 +108,61 @@ class EnvPacket:
             'temp_c': self.temp_c,
             'smoke': self.smoke,
             'volume': self.volume,
+            'crying': self.crying,
+            'cry_score': self.cry_score,
             'dist_cm': self.dist_cm,
             'track': self.track,
             'alarm': self.alarm,
             'imu': self.imu.to_dict() if self.imu else None,
             'fps': self.fps,
         }
+
+
+class CryingDetector:
+    def __init__(self, on_threshold=72, off_threshold=58, on_frames=3, off_frames=4, alpha=0.35):
+        self.on_threshold = int(max(0, min(100, int(on_threshold))))
+        self.off_threshold = int(max(0, min(100, int(off_threshold))))
+        if self.off_threshold > self.on_threshold:
+            self.off_threshold = self.on_threshold
+        self.on_frames = int(max(1, int(on_frames)))
+        self.off_frames = int(max(1, int(off_frames)))
+        self.alpha = float(max(0.01, min(1.0, float(alpha))))
+
+        self.smooth = None
+        self.crying = False
+        self.on_count = 0
+        self.off_count = 0
+
+    def update(self, volume: int) -> Tuple[bool, int]:
+        v = int(max(0, min(100, int(volume))))
+        if self.smooth is None:
+            self.smooth = float(v)
+        else:
+            self.smooth += (v - self.smooth) * self.alpha
+
+        if not self.crying:
+            if self.smooth >= self.on_threshold:
+                self.on_count += 1
+            else:
+                self.on_count = 0
+            if self.on_count >= self.on_frames:
+                self.crying = True
+                self.off_count = 0
+        else:
+            if self.smooth <= self.off_threshold:
+                self.off_count += 1
+            else:
+                self.off_count = 0
+            if self.off_count >= self.off_frames:
+                self.crying = False
+                self.on_count = 0
+
+        if self.smooth <= self.off_threshold:
+            score = 0
+        else:
+            den = max(1.0, 100.0 - float(self.off_threshold))
+            score = int(max(0.0, min(100.0, (self.smooth - self.off_threshold) * 100.0 / den)))
+        return self.crying, score
 
 class CarServer:
     def __init__(self, asr_url=None, mic_health_timeout=2.0):
@@ -134,6 +185,13 @@ class CarServer:
         self.mic_stream = MicStream(asr_url=mic_init_url)
         self.mic_health_timeout = float(mic_health_timeout)
         self.mic_enabled = resolved_asr.lower() not in {'', 'off', 'none', 'disabled'}
+        self.crying_detector = CryingDetector(
+            on_threshold=int(os.getenv('CRY_ON_THRESHOLD', '72')),
+            off_threshold=int(os.getenv('CRY_OFF_THRESHOLD', '58')),
+            on_frames=int(os.getenv('CRY_ON_FRAMES', '3')),
+            off_frames=int(os.getenv('CRY_OFF_FRAMES', '4')),
+            alpha=float(os.getenv('CRY_EMA_ALPHA', '0.35')),
+        )
         self.stop_event = threading.Event()
         self.oled_thread = None
         self.mic_watchdog_thread = None
@@ -145,6 +203,8 @@ class CarServer:
         env = self.pcf8591.get_data()
         dist = self.ultrasonic.get_distance()
         track = self.infrared.get_data().get('track', [1, 1, 1, 1])
+        volume = int(env.get('volume', 0))
+        crying, cry_score = self.crying_detector.update(volume)
         imu_data = self.imu.get_data() if self.imu.enabled else {}
         imu_payload = None
         if imu_data:
@@ -155,13 +215,20 @@ class CarServer:
                 healthy=bool(imu_data.get('healthy', False)),
                 calibrated=bool(imu_data.get('calibrated', False)),
             )
-        alarm = 'smoke' if env.get('smoke_alarm') else ''
+        alarms = []
+        if env.get('smoke_alarm'):
+            alarms.append('smoke')
+        if crying:
+            alarms.append('cry')
+        alarm = '+'.join(alarms)
         return EnvPacket(
             light=int(env.get('light', 0)),
             light_lux=int(env.get('light_lux', 0)),
             temp_c=float(env.get('temp_c', 0.0)),
             smoke=int(env.get('smoke', 0)),
-            volume=int(env.get('volume', 0)),
+            volume=volume,
+            crying=crying,
+            cry_score=cry_score,
             dist_cm=round(float(dist), 1),
             track=track,
             alarm=alarm,

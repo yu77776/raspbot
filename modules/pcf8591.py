@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 import time, threading, math
 try:
     import smbus2
     HAS_I2C = True
-except:
+except Exception:
     HAS_I2C = False
 
 class PCF8591:
@@ -30,7 +30,7 @@ class PCF8591:
             self.bus.write_byte(self.addr, 0x40 | ch)
             self.bus.read_byte(self.addr)
             return self.bus.read_byte(self.addr)
-        except:
+        except Exception:
             return 0
     
     def _light_convert(self, adc):
@@ -44,10 +44,8 @@ class PCF8591:
     
     def _temp_convert(self, adc):
         return round(65 - ((adc -50) * 40) / 182.0, 1)
-    
-    def _smoke_convert(self, adc):
-        return int(adc * 100 / 255)
-    def _volume_convert(self, adc):
+
+    def _percent_convert(self, adc):
         return int(adc * 100 / 255)
     
     def _run(self):
@@ -62,8 +60,8 @@ class PCF8591:
                     'light_lux': self._light_convert(light),
                     'temp_raw': temp,
                     'temp_c': self._temp_convert(temp),
-                    'smoke': self._smoke_convert(smoke),
-                    'volume': self._volume_convert(voltage),
+                    'smoke': self._percent_convert(smoke),
+                    'volume': self._percent_convert(voltage),
                     'smoke_alarm': smoke > self.threshold
                 }
             time.sleep(0.5)
@@ -114,3 +112,4 @@ if __name__ == '__main__':
         print('STOP')
     finally:
         sensor.stop()
+
