@@ -25,17 +25,17 @@ class PCF8591:
             'volume': 0,
             'smoke_alarm': False,
         }
-        # One-point temperature calibration:
-        # current ambient is mapped to target temperature (default 21C).
-        self.temp_cal_target_c = float(os.getenv('RASPBOT_TEMP_CAL_TARGET_C', '21.0'))
-        self.temp_cal_slope_c_per_adc = float(os.getenv('RASPBOT_TEMP_CAL_SLOPE', '-0.22'))
-        self.temp_cal_anchor_adc = None
-        preset_anchor = os.getenv('RASPBOT_TEMP_CAL_ANCHOR_ADC', '').strip()
-        if preset_anchor:
+        # Temperature model: temp_c = k * adc + b
+        # We solve b once at startup by assuming current ambient is room temp (default 21C).
+        self.temp_room_c = float(os.getenv('RASPBOT_TEMP_ROOM_C', '21.0'))
+        self.temp_adc_gain = float(os.getenv('RASPBOT_TEMP_ADC_GAIN', '-0.22'))
+        self.temp_adc_bias = None
+        preset_bias = os.getenv('RASPBOT_TEMP_ADC_BIAS', '').strip()
+        if preset_bias:
             try:
-                self.temp_cal_anchor_adc = float(preset_anchor)
+                self.temp_adc_bias = float(preset_bias)
             except Exception:
-                self.temp_cal_anchor_adc = None
+                self.temp_adc_bias = None
 
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -73,15 +73,13 @@ class PCF8591:
         return round(10 ** ((math.log10(rs) - 6) * (-1)))
 
     def _temp_convert(self, adc):
-        if self.temp_cal_anchor_adc is None:
-            self.temp_cal_anchor_adc = float(adc)
+        if self.temp_adc_bias is None:
+            self.temp_adc_bias = self.temp_room_c - (self.temp_adc_gain * float(adc))
             print(
-                '[PCF8591] temp calibration anchor set: '
-                f'adc={adc} -> {self.temp_cal_target_c:.1f}C'
+                '[PCF8591] temp model initialized: '
+                f'temp = {self.temp_adc_gain:.4f} * adc + {self.temp_adc_bias:.2f}'
             )
-        temp_c = self.temp_cal_target_c + (
-            (float(adc) - self.temp_cal_anchor_adc) * self.temp_cal_slope_c_per_adc
-        )
+        temp_c = (self.temp_adc_gain * float(adc)) + self.temp_adc_bias
         temp_c = max(-20.0, min(80.0, temp_c))
         return round(temp_c, 1)
 
