@@ -38,6 +38,7 @@ class PCF8591:
                 self.temp_adc_bias = None
 
         self.lock = threading.Lock()
+        self.bus_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.bus = None
         self.enabled = False
@@ -53,9 +54,10 @@ class PCF8591:
 
     def _read(self, ch):
         try:
-            self.bus.write_byte(self.addr, 0x40 | ch)
-            self.bus.read_byte(self.addr)
-            return self.bus.read_byte(self.addr)
+            with self.bus_lock:
+                self.bus.write_byte(self.addr, 0x40 | ch)
+                self.bus.read_byte(self.addr)
+                return self.bus.read_byte(self.addr)
         except Exception:
             return 0
 
@@ -127,7 +129,8 @@ class PCF8591:
             self.thread.join(timeout=1.0)
         self.started = False
         if self.bus:
-            self.bus.close()
+            with self.bus_lock:
+                self.bus.close()
             self.bus = None
             self.enabled = False
 

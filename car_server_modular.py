@@ -376,7 +376,6 @@ class CarServer:
         servo2 = cmd.servo_angle2
         speed = cmd.speed
         env_packet = self._get_latest_env()
-        self.audio.set_volume(env_packet.volume)
         action = cmd.action
         
         if cmd.play_song:
@@ -442,6 +441,8 @@ class CarServer:
         
         async def send_video():
             nonlocal last_seq
+            cam_fps = int(getattr(self.camera, 'framerate', 20) or 20)
+            poll_interval = max(0.005, 1.0 / max(5, cam_fps))
             while True:
                 seq, jpeg = self.camera.get_frame()
                 if jpeg and seq != last_seq:
@@ -450,7 +451,8 @@ class CarServer:
                         await ws.send(bytes([MSG_VIDEO]) + jpeg)
                     except websockets.ConnectionClosed:
                         return
-                await asyncio.sleep(0.033)
+                # Match polling cadence with camera FPS to avoid busy looping.
+                await asyncio.sleep(poll_interval)
         
         async def recv_commands():
             async for msg in ws:
