@@ -121,7 +121,18 @@ class EnvPacket:
 
 
 class CryingDetector:
-    def __init__(self, on_threshold=72, off_threshold=58, on_frames=3, off_frames=4, alpha=0.35):
+    def __init__(
+        self,
+        on_threshold=72,
+        off_threshold=58,
+        on_frames=3,
+        off_frames=4,
+        alpha=0.35,
+        baseline_alpha=0.06,
+        margin_on=18,
+        margin_off=10,
+        warmup_frames=8,
+    ):
         self.on_threshold = int(max(0, min(100, int(on_threshold))))
         self.off_threshold = int(max(0, min(100, int(off_threshold))))
         if self.off_threshold > self.on_threshold:
@@ -129,11 +140,25 @@ class CryingDetector:
         self.on_frames = int(max(1, int(on_frames)))
         self.off_frames = int(max(1, int(off_frames)))
         self.alpha = float(max(0.01, min(1.0, float(alpha))))
+        self.baseline_alpha = float(max(0.001, min(0.5, float(baseline_alpha))))
+        self.margin_on = int(max(1, min(60, int(margin_on))))
+        self.margin_off = int(max(1, min(60, int(margin_off))))
+        self.warmup_frames = int(max(0, int(warmup_frames)))
 
         self.smooth = None
+        self.baseline = None
         self.crying = False
         self.on_count = 0
         self.off_count = 0
+        self.frame_count = 0
+
+    def _thresholds(self) -> Tuple[int, int]:
+        if self.baseline is None:
+            return self.on_threshold, self.off_threshold
+        base = int(round(self.baseline))
+        dyn_on = max(self.on_threshold, min(100, base + self.margin_on))
+        dyn_off = max(self.off_threshold, min(dyn_on, base + self.margin_off))
+        return dyn_on, dyn_off
 
     def update(self, volume: int) -> Tuple[bool, int]:
         v = int(max(0, min(100, int(volume))))
@@ -142,29 +167,45 @@ class CryingDetector:
         else:
             self.smooth += (v - self.smooth) * self.alpha
 
-        if not self.crying:
-            if self.smooth >= self.on_threshold:
-                self.on_count += 1
-            else:
-                self.on_count = 0
-            if self.on_count >= self.on_frames:
-                self.crying = True
-                self.off_count = 0
+        if self.baseline is None:
+            self.baseline = float(v)
         else:
-            if self.smooth <= self.off_threshold:
-                self.off_count += 1
-            else:
-                self.off_count = 0
-            if self.off_count >= self.off_frames:
-                self.crying = False
-                self.on_count = 0
+            self.baseline += (v - self.baseline) * self.baseline_alpha
 
-        if self.smooth <= self.off_threshold:
+        self.frame_count += 1
+        on_th, off_th = self._thresholds()
+
+        # Let baseline settle before enabling cry decisions.
+        if self.frame_count > self.warmup_frames:
+            if not self.crying:
+                if self.smooth >= on_th:
+                    self.on_count += 1
+                else:
+                    self.on_count = 0
+                if self.on_count >= self.on_frames:
+                    self.crying = True
+                    self.off_count = 0
+            else:
+                if self.smooth <= off_th:
+                    self.off_count += 1
+                else:
+                    self.off_count = 0
+                if self.off_count >= self.off_frames:
+                    self.crying = False
+                    self.on_count = 0
+        else:
+            self.crying = False
+            self.on_count = 0
+            self.off_count = 0
+
+        if self.smooth <= off_th:
             score = 0
         else:
-            den = max(1.0, 100.0 - float(self.off_threshold))
-            score = int(max(0.0, min(100.0, (self.smooth - self.off_threshold) * 100.0 / den)))
+            den = max(1.0, 100.0 - float(off_th))
+            score = int(max(0.0, min(100.0, (self.smooth - off_th) * 100.0 / den)))
+
         return self.crying, score
+
 
 class CarServer:
     def __init__(self, asr_url=None, mic_health_timeout=2.0):
@@ -193,7 +234,12 @@ class CarServer:
             on_frames=int(os.getenv('CRY_ON_FRAMES', '3')),
             off_frames=int(os.getenv('CRY_OFF_FRAMES', '4')),
             alpha=float(os.getenv('CRY_EMA_ALPHA', '0.35')),
+            baseline_alpha=float(os.getenv('CRY_BASELINE_ALPHA', '0.06')),
+            margin_on=int(os.getenv('CRY_MARGIN_ON', '18')),
+            margin_off=int(os.getenv('CRY_MARGIN_OFF', '10')),
+            warmup_frames=int(os.getenv('CRY_WARMUP_FRAMES', '8')),
         )
+        self.cry_alarm_score_min = int(max(0, min(100, int(os.getenv('CRY_ALARM_SCORE_MIN', '60')))))
         self.stop_event = threading.Event()
         self.oled_thread = None
         self.mic_watchdog_thread = None
@@ -240,7 +286,7 @@ class CarServer:
         alarms = []
         if env.get('smoke_alarm'):
             alarms.append('smoke')
-        if crying:
+        if crying and cry_score >= self.cry_alarm_score_min:
             alarms.append('cry')
         alarm = '+'.join(alarms)
         return EnvPacket(
@@ -593,3 +639,4 @@ if __name__ == '__main__':
     args = p.parse_args()
     asr_url = '' if args.disable_mic_stream else resolve_asr_url(args.asr_url)
     asyncio.run(main(args.host, args.port, asr_url, args.mic_health_timeout))
+
