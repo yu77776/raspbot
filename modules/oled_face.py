@@ -296,94 +296,129 @@ class FaceEngine:
 
         self._display(img)
 
+    def _draw_note(self, draw, cx, cy):
+        """画一个简笔音符：实心圆 + 竖线 + 小旗"""
+        draw.ellipse([cx - 3, cy, cx + 3, cy + 4], fill=1)
+        draw.line([cx + 3, cy + 2, cx + 3, cy - 10], fill=1, width=1)
+        draw.line([cx + 3, cy - 10, cx + 7, cy - 7], fill=1, width=1)
+
     def _draw_event_music(self, ev):
-        """🎵 音符浮动"""
+        """音乐动画：音符浮动"""
         img = self._new_frame()
         draw = ImageDraw.Draw(img)
         t = ev.elapsed
 
         # 三个音符，不同相位浮动
-        notes = ['♪', '♫', '♪']
-        for i, note in enumerate(notes):
+        for i in range(3):
             x = 25 + i * 35
-            y = 8 + int(6 * math.sin(t * 3 + i * 1.5))
-            draw.text((x, y), note, font=self.font_cn, fill=1)
+            y = 14 + int(5 * math.sin(t * 3 + i * 1.5))
+            self._draw_note(draw, x, y)
 
-        # 歌名（如果有）
+        # 歌名
         name = str(ev.value or '')
         if name:
-            # 截断太长的名字
-            display_name = name[:12]
-            self._draw_text_center(draw, 20, display_name, self.font_en)
+            display_name = name[:10]
+            self._draw_text_center(draw, 22, display_name, self.font_en)
 
         self._display(img)
 
     def _draw_event_sensor(self, ev):
-        """📊 传感器大字显示"""
+        """传感器大字显示"""
         img = self._new_frame()
         draw = ImageDraw.Draw(img)
 
         data = ev.value or {}
         label = str(data.get('label', ''))
-        text = str(data.get('text', ''))
+        text = str(data.get('text', ''))[:10]
 
-        # 标签小字
+        # 标签小字居中
         self._draw_text_center(draw, 0, label, self.font_en)
 
-        # 数值大字
-        self._draw_text_center(draw, 12, text, self.font_big)
+        # 数值：尝试大字体，如果太宽就退回小字体
+        font = self.font_big
+        try:
+            tw = draw.textlength(text, font=font)
+        except Exception:
+            tw = 999
+        if tw > 120:
+            font = self.font_en
+        self._draw_text_center(draw, 14, text, font)
 
         self._display(img)
 
     def _draw_event_alert(self, ev):
-        """⚠️ 报警闪烁"""
+        """报警闪烁：交替显示文字帧和空帧"""
+        msg = str(ev.value or 'ALERT')[:12]
+        show_text = int(ev.elapsed / 0.3) % 2 == 0
+
         img = self._new_frame()
         draw = ImageDraw.Draw(img)
-        msg = str(ev.value or 'ALERT')[:12]
 
-        # 每 0.3 秒反色
-        invert = int(ev.elapsed / 0.3) % 2 == 0
-
-        if invert:
-            draw.rectangle([0, 0, 127, 31], fill=1)
-            # 反色文字
-            inv_img = Image.new('1', (128, 32), 1)
-            inv_draw = ImageDraw.Draw(inv_img)
-            self._draw_text_center(inv_draw, 2, '! WARNING !', self.font_en)
-            self._draw_text_center(inv_draw, 16, msg, self.font_cn)
-            # XOR merge
-            from PIL import ImageChops
-            img = ImageChops.invert(inv_img)
+        if show_text:
+            # 文字帧：白字黑底
+            self._draw_text_center(draw, 2, '!! WARNING !!', self.font_en)
+            self._draw_text_center(draw, 18, msg, self.font_cn)
         else:
-            self._draw_text_center(draw, 2, '! WARNING !', self.font_en)
-            self._draw_text_center(draw, 16, msg, self.font_cn)
+            # 反色帧：黑字白底
+            draw.rectangle([0, 0, 127, 31], fill=1)
+            # 用 fill=0 画黑色文字
+            self._draw_text_center_inv(draw, 2, '!! WARNING !!', self.font_en)
+            self._draw_text_center_inv(draw, 18, msg, self.font_cn)
 
         self._display(img)
 
+    def _draw_text_center_inv(self, draw, y, text, font=None):
+        """水平居中绘制文字（黑色，用于反色背景）"""
+        font = font or self.font_en
+        try:
+            tw = draw.textlength(text, font=font)
+        except Exception:
+            box = draw.textbbox((0, 0), text, font=font)
+            tw = box[2] - box[0]
+        x = max(0, (128 - int(tw)) // 2)
+        draw.text((x, y), text, font=font, fill=0)
+
     def _draw_event_listening(self, ev):
-        """🎤 声波动画"""
+        """声波动画"""
         img = self._new_frame()
         draw = ImageDraw.Draw(img)
         t = ev.elapsed
 
-        # 中间麦克风图标（简化为竖线 + 圆弧）
         cx = 64
-        draw.line([cx, 8, cx, 20], fill=1, width=2)
-        draw.arc([cx - 8, 6, cx + 8, 22], 180, 360, fill=1, width=1)
-        draw.line([cx - 8, 22, cx + 8, 22], fill=1, width=1)
-        draw.line([cx, 22, cx, 26], fill=1, width=1)
-        draw.line([cx - 6, 26, cx + 6, 26], fill=1, width=1)
+        # 简笔麦克风
+        draw.rounded_rectangle([cx - 4, 6, cx + 4, 18], radius=3, outline=1)
+        draw.arc([cx - 8, 14, cx + 8, 26], 0, 180, fill=1, width=1)
+        draw.line([cx, 26, cx, 29], fill=1, width=1)
+        draw.line([cx - 5, 29, cx + 5, 29], fill=1, width=1)
 
-        # 两侧声波
+        # 两侧声波线
         for side in (-1, 1):
             for i in range(1, 4):
-                amp = int(4 * math.sin(t * 5 + i * 0.8))
+                amp = max(1, int(4 * abs(math.sin(t * 5 + i * 0.8))))
                 bx = cx + side * (14 + i * 8)
-                draw.line([bx, 16 - abs(amp), bx, 16 + abs(amp)], fill=1, width=1)
+                draw.line([bx, 16 - amp, bx, 16 + amp], fill=1, width=1)
 
         self._display(img)
 
     # ── 事件分发 ──────────────────────────
+
+    def _draw_alarm_flash(self, msg, tick):
+        """持续报警闪烁（不通过事件系统）"""
+        msg = str(msg)[:12]
+        show_text = int(tick / 0.3) % 2 == 0
+
+        img = self._new_frame()
+        draw = ImageDraw.Draw(img)
+
+        if show_text:
+            self._draw_text_center(draw, 2, '!! WARNING !!', self.font_en)
+            self._draw_text_center(draw, 18, msg, self.font_cn)
+        else:
+            draw.rectangle([0, 0, 127, 31], fill=1)
+            self._draw_text_center_inv(draw, 2, '!! WARNING !!', self.font_en)
+            self._draw_text_center_inv(draw, 18, msg, self.font_cn)
+
+        self._display(img)
 
     _EVENT_DRAWERS = {
         'volume':    '_draw_event_volume',
@@ -407,29 +442,31 @@ class FaceEngine:
         tick = 0.0
 
         while not self.stop_event.is_set():
-            # 优先级：事件 > 报警 > 表情
-            ev = self._pop_event()
+            try:
+                # 优先级：事件 > 报警 > 表情
+                ev = self._pop_event()
 
-            if ev:
-                self._draw_event(ev)
-            else:
-                with self.lock:
-                    alarm = self.alarm
-                    state = self.face_state
-
-                if alarm:
-                    # 持续报警用闪烁
-                    alert_ev = OledEvent('alert', alarm, duration=999)
-                    alert_ev.start_t = time.monotonic() - tick  # 用 tick 驱动闪烁
-                    self._draw_event_alert(alert_ev)
-                elif state == 'tracking':
-                    self._draw_face_tracking(tick)
-                elif state == 'turning':
-                    self._draw_face_turning(tick)
-                elif state == 'sleeping':
-                    self._draw_face_sleeping(tick)
+                if ev:
+                    self._draw_event(ev)
                 else:
-                    self._draw_face_idle(tick)
+                    with self.lock:
+                        alarm = self.alarm
+                        state = self.face_state
+
+                    if alarm:
+                        self._draw_alarm_flash(alarm, tick)
+                    elif state == 'tracking':
+                        self._draw_face_tracking(tick)
+                    elif state == 'turning':
+                        self._draw_face_turning(tick)
+                    elif state == 'sleeping':
+                        self._draw_face_sleeping(tick)
+                    else:
+                        self._draw_face_idle(tick)
+            except Exception as e:
+                # 绘制错误不能让整个线程崩溃
+                if int(tick) % 5 == 0:
+                    print(f'[OLED] draw error: {e}')
 
             time.sleep(0.05)
             tick += 0.05

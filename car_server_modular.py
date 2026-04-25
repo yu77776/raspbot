@@ -73,6 +73,7 @@ class ImuPacket:
     roll: float = 0.0
     pitch: float = 0.0
     yaw: float = 0.0
+    yaw_rate: float = 0.0    # gyro Z (deg/s)，用于速率闭环
     healthy: bool = False
     calibrated: bool = False
 
@@ -81,6 +82,7 @@ class ImuPacket:
             'roll': self.roll,
             'pitch': self.pitch,
             'yaw': self.yaw,
+            'yaw_rate': self.yaw_rate,
             'healthy': self.healthy,
             'calibrated': self.calibrated,
         }
@@ -226,10 +228,12 @@ class CarServer:
         imu_data = self.imu.get_data() if self.imu.enabled else {}
         imu_payload = None
         if imu_data:
+            gyro = imu_data.get('gyro_dps', [0.0, 0.0, 0.0])
             imu_payload = ImuPacket(
                 roll=float(imu_data.get('roll', 0.0)),
                 pitch=float(imu_data.get('pitch', 0.0)),
                 yaw=float(imu_data.get('yaw', 0.0)),
+                yaw_rate=float(gyro[2]) if len(gyro) > 2 else 0.0,
                 healthy=bool(imu_data.get('healthy', False)),
                 calibrated=bool(imu_data.get('calibrated', False)),
             )
