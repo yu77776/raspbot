@@ -288,6 +288,9 @@ class CarServer:
                         "volume": env.volume,
                         "dist_cm": env.dist_cm,
                     })
+                    # 哭声报警自动触发安抚
+                    if env.crying and env.cry_score > 60:
+                        self.oled.set_alarm('BABY CRY')
                 except Exception as e:
                     print(f'[OLED] update error: {e}')
                 time.sleep(0.5)
@@ -384,8 +387,8 @@ class CarServer:
             self.audio.clear()
         
         dist = env_packet.dist_cm
-        if action == 'forward' and dist < 15:
-            print(f'[SAFE] block forward by ultrasonic dist={dist:.1f}cm')
+        if action == 'forward' and dist < 30:
+            print(f'[SAFE] block forward at dist={dist:.1f}cm (<30cm)')
             action = 'stop'
         
         self.motor.set_servo(1, servo1)
@@ -409,13 +412,23 @@ class CarServer:
         else:
             self.motor.stop()
         
-        if cmd.detecting:
-            self.oled.set_state('env')
+        # OLED 表情状态映射
+        if action in ('spin_left', 'spin_right'):
+            self.oled.set_state('turning')
+        elif cmd.detecting:
+            self.oled.set_state('tracking')
         else:
             self.oled.set_state('idle')
         
+        # 播放音乐时推送音乐事件
+        if cmd.play_song:
+            self.oled.push_event('music', cmd.play_song, duration=3.0)
+        
+        # 报警
         if 'smoke' in env_packet.alarm:
             self.oled.set_alarm(f"SMOKE {env_packet.smoke}")
+        elif 'cry' in env_packet.alarm:
+            self.oled.set_alarm('BABY CRY')
         else:
             self.oled.set_alarm('')
 

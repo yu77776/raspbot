@@ -1,5 +1,16 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
+"""
+oled_face.py · 事件驱动 OLED 表情引擎
 
+设计理念：
+  - 常态显示表情（待机眨眼 / 追踪注视 / 转身晕眼 / 睡眠）
+  - 事件临时接管屏幕（音量条 / 音乐动画 / 传感器数值 / 报警闪烁）
+  - 事件结束后自动回到表情
+
+128×32 像素，面向婴儿，不面向家长。
+"""
+
+import math
 import random
 import threading
 import time
@@ -13,6 +24,25 @@ except Exception:
     HAS_OLED = False
 
 
+# ── 事件类型 ──────────────────────────────
+
+class OledEvent:
+    """临时接管屏幕的事件"""
+    def __init__(self, kind: str, value=None, duration: float = 2.5):
+        self.kind = kind        # 'volume' | 'music' | 'sensor' | 'alert' | 'listening'
+        self.value = value      # 事件数据（音量值、传感器 dict、报警文字等）
+        self.duration = duration
+        self.start_t = time.monotonic()
+
+    @property
+    def elapsed(self):
+        return time.monotonic() - self.start_t
+
+    @property
+    def expired(self):
+        return self.elapsed >= self.duration
+
+
 class FaceEngine:
     def __init__(self):
         self.device = None
@@ -20,12 +50,19 @@ class FaceEngine:
         self.font_en = None
         self.font_cn_name = 'unset'
         self.font_en_name = 'unset'
-        self.state = 'env'
+
+        # 基础状态
+        self.face_state = 'idle'   # idle | tracking | turning | sleeping
         self.alarm = ''
         self.env_data = {}
+        self.eye_offset = 0
+
+        # 事件队列（只保留最新一个）
+        self._event = None
+        self._event_lock = threading.Lock()
+
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
-        self.eye_offset = 0
 
         if not HAS_OLED:
             print('[OLED] unavailable')
@@ -47,11 +84,17 @@ class FaceEngine:
                 '/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf',
                 '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',
             ], 11)
+            self.font_big, _ = self._load_font([
+                '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+                '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+            ], 18)
 
             print(f'[OLED] OK cn={self.font_cn_name} en={self.font_en_name}')
         except Exception as e:
             print(f'[OLED] FAIL: {e}')
             self.device = None
+
+    # ── 字体 ──────────────────────────────
 
     def _load_font(self, candidates, size):
         for path in candidates:
@@ -61,10 +104,13 @@ class FaceEngine:
                 continue
         return ImageFont.load_default(), 'PIL_default'
 
-    def _draw_text_mixed(self, draw, pos, text):
+    def _draw_text_mixed(self, draw, pos, text, font_override=None):
         x, y = pos
         for ch in str(text):
-            font = self.font_en if ord(ch) < 128 else self.font_cn
+            if font_override:
+                font = font_override
+            else:
+                font = self.font_en if ord(ch) < 128 else self.font_cn
             draw.text((x, y), ch, font=font, fill=1)
             try:
                 advance = draw.textlength(ch, font=font)
@@ -73,19 +119,34 @@ class FaceEngine:
                 advance = (box[2] - box[0]) if box else 0
             x += max(1, int(round(advance)))
 
-    def _draw_kv_row(self, draw, y, label, value, value_x=52):
-        self._draw_text_mixed(draw, (2, y), label)
-        self._draw_text_mixed(draw, (value_x, y), value)
+    def _draw_text_center(self, draw, y, text, font=None):
+        """水平居中绘制文字"""
+        font = font or self.font_en
+        try:
+            tw = draw.textlength(text, font=font)
+        except Exception:
+            box = draw.textbbox((0, 0), text, font=font)
+            tw = box[2] - box[0]
+        x = max(0, (128 - int(tw)) // 2)
+        draw.text((x, y), text, font=font, fill=1)
+
+    # ── 外部接口 ─────────────────────────
 
     def set_state(self, s):
+        """设置基础表情状态: idle / tracking / turning / sleeping"""
         with self.lock:
-            self.state = s
+            self.face_state = s
 
     def set_alarm(self, msg):
+        """设置报警文字，非空时触发报警事件"""
         with self.lock:
+            old = self.alarm
             self.alarm = msg
+        if msg and msg != old:
+            self.push_event('alert', msg, duration=5.0)
 
     def set_pan(self, angle):
+        """舵机角度 → 眼球偏移"""
         self.eye_offset = int((angle - 90) / 45 * 9)
         self.eye_offset = max(-10, min(10, self.eye_offset))
 
@@ -93,82 +154,285 @@ class FaceEngine:
         with self.lock:
             self.env_data = data
 
-    def _draw_eyes(self, ry):
-        if not self.device:
-            return
-        img = Image.new('1', (128, 32), 0)
+    def push_event(self, kind, value=None, duration=2.5):
+        """
+        推送临时事件，立即接管屏幕。
+
+        kind:
+          'volume'    - value: int 0-100，显示音量条
+          'music'     - value: str 歌名（可选），显示音符动画
+          'sensor'    - value: dict {'label': 'Temp', 'text': '25.3°C'}
+          'alert'     - value: str 报警文字，闪烁显示
+          'listening' - value: None，显示麦克风/声波动画
+        """
+        with self._event_lock:
+            self._event = OledEvent(kind, value, duration)
+
+    def _pop_event(self):
+        with self._event_lock:
+            ev = self._event
+            if ev and ev.expired:
+                self._event = None
+                return None
+            return ev
+
+    # ── 表情绘制 ──────────────────────────
+
+    def _new_frame(self):
+        return Image.new('1', (128, 32), 0)
+
+    def _display(self, img):
+        if self.device:
+            self.device.display(img)
+
+    def _draw_face_idle(self, tick):
+        """😊 待机：圆眼 + 随机眨眼"""
+        img = self._new_frame()
         draw = ImageDraw.Draw(img)
         lx = 38 + self.eye_offset
         rx = 90 + self.eye_offset
+
+        # 眨眼
+        blink_cycle = tick % 5.0
+        if blink_cycle > 4.8:
+            ry = 2  # 眯眼
+        else:
+            ry = 10
+
         draw.ellipse([lx - 14, 16 - ry, lx + 14, 16 + ry], fill=1)
         draw.ellipse([rx - 14, 16 - ry, rx + 14, 16 + ry], fill=1)
-        self.device.display(img)
 
-    def _draw_alarm(self, msg):
-        if not self.device:
-            return
-        img = Image.new('1', (128, 32), 0)
+        # 小嘴巴
+        draw.arc([54, 22, 74, 32], 0, 180, fill=1, width=1)
+
+        self._display(img)
+
+    def _draw_face_tracking(self, tick):
+        """👀 追踪：眼球跟随 + 微笑"""
+        img = self._new_frame()
         draw = ImageDraw.Draw(img)
-        self._draw_text_mixed(draw, (10, 8), msg[:10])
-        self.device.display(img)
+        lx = 38 + self.eye_offset
+        rx = 90 + self.eye_offset
 
-    def _draw_env(self, page):
-        if not self.device:
-            return
-        img = Image.new('1', (128, 32), 0)
+        # 眼眶
+        draw.ellipse([lx - 14, 6, lx + 14, 26], outline=1, width=1)
+        draw.ellipse([rx - 14, 6, rx + 14, 26], outline=1, width=1)
+
+        # 眼球（实心小圆，跟随偏移更明显）
+        pb = self.eye_offset // 2
+        draw.ellipse([lx - 5 + pb, 11, lx + 5 + pb, 21], fill=1)
+        draw.ellipse([rx - 5 + pb, 11, rx + 5 + pb, 21], fill=1)
+
+        # 微笑弧
+        draw.arc([50, 22, 78, 34], 10, 170, fill=1, width=1)
+
+        self._display(img)
+
+    def _draw_face_turning(self, tick):
+        """😵 转身：螺旋眼"""
+        img = self._new_frame()
         draw = ImageDraw.Draw(img)
-        with self.lock:
-            d = self.env_data
+        lx, rx = 38, 90
+        angle = (tick * 300) % 360
 
-        y1, y2 = 0, 16
+        for cx in (lx, rx):
+            # 螺旋线
+            for i in range(0, 360, 30):
+                a = math.radians(angle + i)
+                r = 4 + (i / 360) * 8
+                x = cx + int(r * math.cos(a))
+                y = 16 + int(r * math.sin(a))
+                draw.point((x, y), fill=1)
+            # 外圈
+            draw.ellipse([cx - 13, 3, cx + 13, 29], outline=1, width=1)
 
-        if page == 0:
-            t = d.get('temp_c', 0)
-            l = d.get('light_lux', 0)
-            self._draw_kv_row(draw, y1, 'Temp:', f'{t:.1f}C')
-            self._draw_kv_row(draw, y2, 'Light:', f'{l}lux')
-        elif page == 1:
-            s = d.get('smoke', 0)
-            dist = d.get('dist_cm', 0)
-            self._draw_kv_row(draw, y1, 'Smoke:', f'{s}')
-            self._draw_kv_row(draw, y2, 'Dist:', f'{dist:.0f}cm')
+        self._display(img)
+
+    def _draw_face_sleeping(self, tick):
+        """😴 睡眠：闭眼 + zzZ"""
+        img = self._new_frame()
+        draw = ImageDraw.Draw(img)
+        lx = 38
+        rx = 90
+
+        # 闭眼（横线）
+        draw.line([lx - 10, 16, lx + 10, 16], fill=1, width=1)
+        draw.line([rx - 10, 16, rx + 10, 16], fill=1, width=1)
+
+        # zzZ 浮动
+        phase = int(tick * 2) % 3
+        z_chars = ['z', 'z', 'Z']
+        z_positions = [(105, 18), (112, 10), (118, 2)]
+        for i in range(phase + 1):
+            if i < len(z_positions):
+                draw.text(z_positions[i], z_chars[i], font=self.font_en, fill=1)
+
+        self._display(img)
+
+    # ── 事件绘制 ──────────────────────────
+
+    def _draw_event_volume(self, ev):
+        """🔊 音量条"""
+        img = self._new_frame()
+        draw = ImageDraw.Draw(img)
+        vol = int(ev.value or 0)
+        vol = max(0, min(100, vol))
+
+        # 标题
+        self._draw_text_center(draw, 0, 'VOL', self.font_en)
+
+        # 进度条框
+        bar_x, bar_y = 14, 16
+        bar_w, bar_h = 100, 12
+        draw.rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h], outline=1)
+
+        # 填充
+        fill_w = int(bar_w * vol / 100)
+        if fill_w > 0:
+            draw.rectangle([bar_x + 1, bar_y + 1, bar_x + fill_w, bar_y + bar_h - 1], fill=1)
+
+        # 数值
+        self._draw_text_center(draw, 16, f'{vol}%', self.font_en)
+
+        self._display(img)
+
+    def _draw_event_music(self, ev):
+        """🎵 音符浮动"""
+        img = self._new_frame()
+        draw = ImageDraw.Draw(img)
+        t = ev.elapsed
+
+        # 三个音符，不同相位浮动
+        notes = ['♪', '♫', '♪']
+        for i, note in enumerate(notes):
+            x = 25 + i * 35
+            y = 8 + int(6 * math.sin(t * 3 + i * 1.5))
+            draw.text((x, y), note, font=self.font_cn, fill=1)
+
+        # 歌名（如果有）
+        name = str(ev.value or '')
+        if name:
+            # 截断太长的名字
+            display_name = name[:12]
+            self._draw_text_center(draw, 20, display_name, self.font_en)
+
+        self._display(img)
+
+    def _draw_event_sensor(self, ev):
+        """📊 传感器大字显示"""
+        img = self._new_frame()
+        draw = ImageDraw.Draw(img)
+
+        data = ev.value or {}
+        label = str(data.get('label', ''))
+        text = str(data.get('text', ''))
+
+        # 标签小字
+        self._draw_text_center(draw, 0, label, self.font_en)
+
+        # 数值大字
+        self._draw_text_center(draw, 12, text, self.font_big)
+
+        self._display(img)
+
+    def _draw_event_alert(self, ev):
+        """⚠️ 报警闪烁"""
+        img = self._new_frame()
+        draw = ImageDraw.Draw(img)
+        msg = str(ev.value or 'ALERT')[:12]
+
+        # 每 0.3 秒反色
+        invert = int(ev.elapsed / 0.3) % 2 == 0
+
+        if invert:
+            draw.rectangle([0, 0, 127, 31], fill=1)
+            # 反色文字
+            inv_img = Image.new('1', (128, 32), 1)
+            inv_draw = ImageDraw.Draw(inv_img)
+            self._draw_text_center(inv_draw, 2, '! WARNING !', self.font_en)
+            self._draw_text_center(inv_draw, 16, msg, self.font_cn)
+            # XOR merge
+            from PIL import ImageChops
+            img = ImageChops.invert(inv_img)
         else:
-            v = d.get('volume', 0)
-            self._draw_kv_row(draw, 9, 'Volume:', f'{v}%')
+            self._draw_text_center(draw, 2, '! WARNING !', self.font_en)
+            self._draw_text_center(draw, 16, msg, self.font_cn)
 
-        self.device.display(img)
+        self._display(img)
+
+    def _draw_event_listening(self, ev):
+        """🎤 声波动画"""
+        img = self._new_frame()
+        draw = ImageDraw.Draw(img)
+        t = ev.elapsed
+
+        # 中间麦克风图标（简化为竖线 + 圆弧）
+        cx = 64
+        draw.line([cx, 8, cx, 20], fill=1, width=2)
+        draw.arc([cx - 8, 6, cx + 8, 22], 180, 360, fill=1, width=1)
+        draw.line([cx - 8, 22, cx + 8, 22], fill=1, width=1)
+        draw.line([cx, 22, cx, 26], fill=1, width=1)
+        draw.line([cx - 6, 26, cx + 6, 26], fill=1, width=1)
+
+        # 两侧声波
+        for side in (-1, 1):
+            for i in range(1, 4):
+                amp = int(4 * math.sin(t * 5 + i * 0.8))
+                bx = cx + side * (14 + i * 8)
+                draw.line([bx, 16 - abs(amp), bx, 16 + abs(amp)], fill=1, width=1)
+
+        self._display(img)
+
+    # ── 事件分发 ──────────────────────────
+
+    _EVENT_DRAWERS = {
+        'volume':    '_draw_event_volume',
+        'music':     '_draw_event_music',
+        'sensor':    '_draw_event_sensor',
+        'alert':     '_draw_event_alert',
+        'listening': '_draw_event_listening',
+    }
+
+    def _draw_event(self, ev):
+        drawer = self._EVENT_DRAWERS.get(ev.kind)
+        if drawer:
+            getattr(self, drawer)(ev)
+        else:
+            # fallback
+            self._draw_event_sensor(ev)
+
+    # ── 主循环 ────────────────────────────
 
     def _run(self):
-        blink_t = 0
-        next_blink = random.uniform(3, 5)
-        ry = 10
-        env_page = 0
-        page_timer = 0
+        tick = 0.0
 
         while not self.stop_event.is_set():
-            with self.lock:
-                alarm = self.alarm
-                state = self.state
+            # 优先级：事件 > 报警 > 表情
+            ev = self._pop_event()
 
-            if alarm:
-                self._draw_alarm(alarm)
-            elif state == 'idle':
-                blink_t += 0.05
-                if blink_t >= next_blink:
-                    ry = 0
-                    blink_t = 0
-                    next_blink = random.uniform(3, 5)
+            if ev:
+                self._draw_event(ev)
+            else:
+                with self.lock:
+                    alarm = self.alarm
+                    state = self.face_state
+
+                if alarm:
+                    # 持续报警用闪烁
+                    alert_ev = OledEvent('alert', alarm, duration=999)
+                    alert_ev.start_t = time.monotonic() - tick  # 用 tick 驱动闪烁
+                    self._draw_event_alert(alert_ev)
+                elif state == 'tracking':
+                    self._draw_face_tracking(tick)
+                elif state == 'turning':
+                    self._draw_face_turning(tick)
+                elif state == 'sleeping':
+                    self._draw_face_sleeping(tick)
                 else:
-                    ry = 10
-                self._draw_eyes(int(ry))
-            elif state == 'env':
-                page_timer += 0.1
-                if page_timer >= 3:
-                    env_page = (env_page + 1) % 3
-                    page_timer = 0
-                self._draw_env(env_page)
+                    self._draw_face_idle(tick)
 
             time.sleep(0.05)
+            tick += 0.05
 
     def start(self):
         if not self.device:
