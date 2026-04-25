@@ -487,7 +487,7 @@ class CarServer:
                 except websockets.ConnectionClosed:
                     return
                 print(f"[DEBUG] Env: T={env_packet.temp_c:.1f} L={env_packet.light_lux} S={env_packet.smoke}")
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(self.env_update_interval)
         
         try:
             await asyncio.gather(send_video(), recv_commands(), send_env())
