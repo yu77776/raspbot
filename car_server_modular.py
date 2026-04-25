@@ -292,9 +292,6 @@ class CarServer:
                         "volume": env.volume,
                         "dist_cm": env.dist_cm,
                     })
-                    # 哭声报警自动触发安抚
-                    if env.crying and env.cry_score > 60:
-                        self.oled.set_alarm('BABY CRY')
                 except Exception as e:
                     print(f'[OLED] update error: {e}')
                 time.sleep(0.5)
@@ -384,9 +381,11 @@ class CarServer:
         speed = cmd.speed
         env_packet = self._get_latest_env()
         action = cmd.action
+        song_cmd = str(cmd.play_song or '').strip()
+        is_sensor_event = song_cmd.startswith('__sensor__')
         
-        if cmd.play_song:
-            self.audio.enqueue('song', cmd.play_song)
+        if song_cmd and not is_sensor_event:
+            self.audio.enqueue('song', song_cmd)
         if cmd.stop_audio:
             self.audio.clear()
         
@@ -424,9 +423,18 @@ class CarServer:
         else:
             self.oled.set_state('idle')
         
-        # 播放音乐时推送音乐事件
-        if cmd.play_song:
-            self.oled.push_event('music', cmd.play_song, duration=3.0)
+        # 播放音乐时推送音乐事件；传感器查询编码走 sensor 事件
+        if song_cmd and not is_sensor_event:
+            song_name = os.path.splitext(os.path.basename(song_cmd))[0]
+            self.oled.push_event('music', song_name, duration=3.0)
+        elif is_sensor_event:
+            parts = song_cmd.split('__')
+            if len(parts) >= 4:
+                self.oled.push_event(
+                    'sensor',
+                    {'label': parts[2], 'text': parts[3]},
+                    duration=3.0,
+                )
         
         # 报警
         if 'smoke' in env_packet.alarm:
