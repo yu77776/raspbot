@@ -199,7 +199,25 @@ class CarServer:
         self.manual_override_until = 0.0
         self.manual_override_sec = float(os.getenv('RASPBOT_MANUAL_OVERRIDE_SEC', '1.2'))
 
-    def _build_env_packet(self):
+        self.env_update_interval = float(os.getenv('RASPBOT_ENV_INTERVAL_SEC', '0.5'))
+        self._env_lock = threading.Lock()
+        self._latest_env = EnvPacket(
+            light=0,
+            light_lux=0,
+            temp_c=0.0,
+            smoke=0,
+            volume=0,
+            crying=False,
+            cry_score=0,
+            dist_cm=999.0,
+            track=[1, 1, 1, 1],
+            alarm='',
+            imu=None,
+            fps=0,
+        )
+        self.env_thread = None
+
+    def _sample_env_packet(self):
         env = self.pcf8591.get_data()
         dist = self.ultrasonic.get_distance()
         track = self.infrared.get_data().get('track', [1, 1, 1, 1])
@@ -235,12 +253,34 @@ class CarServer:
             imu=imu_payload,
             fps=int(self.camera.get_fps()),
         )
-    
+
+    def _refresh_env_cache(self):
+        env_packet = self._sample_env_packet()
+        with self._env_lock:
+            self._latest_env = env_packet
+        return env_packet
+
+    def _get_latest_env(self):
+        with self._env_lock:
+            return self._latest_env
+
+    def _start_env_cache_loop(self):
+        def updater():
+            while not self.stop_event.is_set():
+                try:
+                    self._refresh_env_cache()
+                except Exception as e:
+                    print(f'[ENV] update error: {e}')
+                time.sleep(self.env_update_interval)
+
+        self.env_thread = threading.Thread(target=updater, daemon=True)
+        self.env_thread.start()
+
     def _update_oled_loop(self):
         def update():
             while not self.stop_event.is_set():
                 try:
-                    env = self._build_env_packet()
+                    env = self._get_latest_env()
                     self.oled.set_env_data({
                         "temp_c": env.temp_c,
                         "light_lux": env.light_lux,
@@ -304,6 +344,9 @@ class CarServer:
                 self._start_mic_pipeline()
         else:
             print('[MIC] disabled')
+
+        self._refresh_env_cache()
+        self._start_env_cache_loop()
         self._update_oled_loop()
         print(f'[SYS] all modules started (asr_url={self.mic_stream.asr_url}, mic_timeout={self.mic_health_timeout}s)')
 
@@ -313,6 +356,8 @@ class CarServer:
             self.mic_watchdog_thread.join(timeout=1.0)
         if self.oled_thread and self.oled_thread.is_alive():
             self.oled_thread.join(timeout=1.0)
+        if self.env_thread and self.env_thread.is_alive():
+            self.env_thread.join(timeout=1.0)
 
         if self.mic_enabled:
             self.mic_stream.stop()
@@ -330,9 +375,8 @@ class CarServer:
         servo1 = cmd.servo_angle
         servo2 = cmd.servo_angle2
         speed = cmd.speed
-        env = self.pcf8591.get_data()
-        volume = env.get("volume", 50)
-        self.audio.set_volume(volume)
+        env_packet = self._get_latest_env()
+        self.audio.set_volume(env_packet.volume)
         action = cmd.action
         
         if cmd.play_song:
@@ -340,7 +384,7 @@ class CarServer:
         if cmd.stop_audio:
             self.audio.clear()
         
-        dist = self.ultrasonic.get_distance()
+        dist = env_packet.dist_cm
         if action == 'forward' and dist < 15:
             print(f'[SAFE] block forward by ultrasonic dist={dist:.1f}cm')
             action = 'stop'
@@ -371,9 +415,8 @@ class CarServer:
         else:
             self.oled.set_state('idle')
         
-        env = self.pcf8591.get_data()
-        if env['smoke_alarm']:
-            self.oled.set_alarm(f"SMOKE {env['smoke']}")
+        if 'smoke' in env_packet.alarm:
+            self.oled.set_alarm(f"SMOKE {env_packet.smoke}")
         else:
             self.oled.set_alarm('')
 
@@ -434,7 +477,7 @@ class CarServer:
         
         async def send_env():
             while True:
-                env_packet = self._build_env_packet()
+                env_packet = self._get_latest_env()
                 payload = bytes([MSG_ENV]) + json.dumps(env_packet.to_dict()).encode('utf-8')
                 
                 try:
