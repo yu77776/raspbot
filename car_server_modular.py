@@ -482,8 +482,14 @@ class CarServer:
         song_cmd = str(cmd.play_song or '').strip()
         is_sensor_event = song_cmd.startswith('__sensor__')
         
+        display_song_cmd = song_cmd
         if song_cmd and not is_sensor_event:
-            self.audio.enqueue('song', song_cmd)
+            resolved_song = self.audio.resolve_song(song_cmd)
+            if resolved_song:
+                display_song_cmd = resolved_song
+                self.audio.enqueue('song', resolved_song)
+            else:
+                print('[AUDIO] no default song found')
         if cmd.stop_audio:
             self.audio.clear()
         
@@ -524,7 +530,7 @@ class CarServer:
         
         # 播放音乐时推送音乐事件；传感器查询编码走 sensor 事件
         if song_cmd and not is_sensor_event:
-            song_name = os.path.splitext(os.path.basename(song_cmd))[0]
+            song_name = os.path.splitext(os.path.basename(display_song_cmd))[0]
             self.oled.push_event('music', song_name, duration=3.0)
         elif is_sensor_event:
             parts = song_cmd.split('__')

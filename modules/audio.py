@@ -34,8 +34,28 @@ class Audio:
         with self.lock:
             self.queue.append((kind, content))
 
+    def resolve_song(self, filename):
+        name = str(filename or '').strip()
+        if name.lower() != 'default':
+            return name
+
+        try:
+            candidates = sorted(
+                f for f in os.listdir(self.songs_dir)
+                if f.lower().endswith(('.mp3', '.ogg', '.wav', '.flac', '.m4a'))
+            )
+        except Exception as e:
+            print(f'[AUDIO] list songs failed: {e}')
+            return ''
+
+        return candidates[0] if candidates else ''
+
     def _play_file(self, filename):
         if not HAS_AUDIO:
+            return
+        filename = self.resolve_song(filename)
+        if not filename:
+            print(f'[AUDIO] no song available in: {self.songs_dir}')
             return
         path = os.path.join(self.songs_dir, filename)
         if not os.path.exists(path):
