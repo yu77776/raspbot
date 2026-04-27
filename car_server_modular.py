@@ -14,7 +14,6 @@ from modules.oled_face import FaceEngine
 from modules.mic_stream import MicStream
 from modules.mpu6050 import MPU6050
 import websockets
-from websockets.server import WebSocketServerProtocol
 
 logging.getLogger('websockets.server').setLevel(logging.CRITICAL)
 logging.getLogger('websockets.asyncio.server').setLevel(logging.CRITICAL)
@@ -538,7 +537,7 @@ class CarServer:
         
         self._sync_oled_alarm(env_packet)
 
-    async def handle_client(self, ws: WebSocketServerProtocol):
+    async def handle_client(self, ws):
         addr = ws.remote_address
         print(f'[WS] connected: {addr}')
         if self.mic_enabled and self.mic_auto_mode:
