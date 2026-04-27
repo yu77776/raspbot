@@ -1,5 +1,5 @@
-﻿#!/usr/bin/env python3
-import sys, os, asyncio, json, argparse, threading, time
+#!/usr/bin/env python3
+import sys, os, asyncio, json, argparse, threading, time, logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -15,6 +15,9 @@ from modules.mic_stream import MicStream
 from modules.mpu6050 import MPU6050
 import websockets
 from websockets.server import WebSocketServerProtocol
+
+logging.getLogger('websockets.server').setLevel(logging.CRITICAL)
+logging.getLogger('websockets.asyncio.server').setLevel(logging.CRITICAL)
 
 MSG_VIDEO = 0x01
 MSG_COMMAND = 0x02
@@ -687,4 +690,3 @@ if __name__ == '__main__':
     args = p.parse_args()
     asr_url = '' if args.disable_mic_stream else resolve_asr_url(args.asr_url)
     asyncio.run(main(args.host, args.port, asr_url, args.mic_health_timeout))
-
