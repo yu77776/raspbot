@@ -40,15 +40,16 @@ class Audio:
             return name
 
         try:
+            entries = os.listdir(os.fsencode(self.songs_dir))
             candidates = sorted(
-                f for f in os.listdir(self.songs_dir)
-                if f.lower().endswith(('.mp3', '.ogg', '.wav', '.flac', '.m4a'))
+                f for f in entries
+                if f.lower().endswith((b'.mp3', b'.ogg', b'.wav', b'.flac', b'.m4a'))
             )
         except Exception as e:
             print(f'[AUDIO] list songs failed: {e}')
             return ''
 
-        return candidates[0] if candidates else ''
+        return os.fsdecode(candidates[0]) if candidates else ''
 
     def _play_file(self, filename):
         if not HAS_AUDIO:
