@@ -117,27 +117,54 @@ class FaceEngine:
         if self.device:
             self.device.display(image)
 
+    def _font_for_char(self, ch, preferred=None):
+        if ord(ch) < 128:
+            return preferred or self.font_en
+        return self.font_cn or preferred or self.font_en
+
+    def _text_width_mixed(self, draw, text, font=None):
+        width = 0
+        for ch in str(text):
+            ch_font = self._font_for_char(ch, font)
+            try:
+                advance = draw.textlength(ch, font=ch_font)
+            except Exception:
+                box = draw.textbbox((0, 0), ch, font=ch_font)
+                advance = (box[2] - box[0]) if box else 0
+            width += max(1, int(round(advance)))
+        return width
+
+    def _draw_text_mixed(self, draw, x, y, text, font=None, fill=1):
+        for ch in str(text):
+            ch_font = self._font_for_char(ch, font)
+            draw.text((x, y), ch, font=ch_font, fill=fill)
+            try:
+                advance = draw.textlength(ch, font=ch_font)
+            except Exception:
+                box = draw.textbbox((0, 0), ch, font=ch_font)
+                advance = (box[2] - box[0]) if box else 0
+            x += max(1, int(round(advance)))
+
+    def _fit_text(self, draw, text, max_width=124, font=None):
+        out = ""
+        for ch in str(text):
+            candidate = out + ch
+            if self._text_width_mixed(draw, candidate, font) > max_width:
+                break
+            out = candidate
+        return out
+
     def _draw_text_center(self, draw, y, text, font=None):
-        font = font or self.font_en
         text = str(text)
-        try:
-            tw = draw.textlength(text, font=font)
-        except Exception:
-            box = draw.textbbox((0, 0), text, font=font)
-            tw = box[2] - box[0]
-        x = max(0, (128 - int(tw)) // 2)
-        draw.text((x, y), text, font=font, fill=1)
+        tw = self._text_width_mixed(draw, text, font)
+        x = max(0, (128 - tw) // 2)
+        self._draw_text_mixed(draw, x, y, text, font=font, fill=1)
 
     def _draw_text_center_inv(self, draw, y, text, font=None):
-        font = font or self.font_en
         text = str(text)
-        try:
-            tw = draw.textlength(text, font=font)
-        except Exception:
-            box = draw.textbbox((0, 0), text, font=font)
-            tw = box[2] - box[0]
-        x = max(0, (128 - int(tw)) // 2)
-        draw.text((x, y), text, font=font, fill=0)
+        tw = self._text_width_mixed(draw, text, font)
+        x = max(0, (128 - tw) // 2)
+        self._draw_text_mixed(draw, x, y, text, font=font, fill=0)
 
     # Public API
     def set_state(self, state):
@@ -286,7 +313,7 @@ class FaceEngine:
 
         name = str(ev.value or "")
         if name:
-            self._draw_text_center(draw, 22, name[:10], self.font_en)
+            self._draw_text_center(draw, 22, self._fit_text(draw, name, font=self.font_en), self.font_en)
 
         self._display(image)
 
@@ -295,28 +322,25 @@ class FaceEngine:
         draw = ImageDraw.Draw(image)
 
         data = ev.value if isinstance(ev.value, dict) else {}
-        label = str(data.get("label", ""))
-        text = str(data.get("text", ""))[:10]
+        label = self._fit_text(draw, str(data.get("label", "")), font=self.font_en)
+        text = str(data.get("text", ""))
 
         self._draw_text_center(draw, 0, label, self.font_en)
 
         font = self.font_big
-        try:
-            tw = draw.textlength(text, font=font)
-        except Exception:
-            tw = 999
+        tw = self._text_width_mixed(draw, text, font=font)
         if tw > 120:
             font = self.font_en
-        self._draw_text_center(draw, 14, text, font)
+        self._draw_text_center(draw, 14, self._fit_text(draw, text, font=font), font)
 
         self._display(image)
 
     def _draw_event_alert(self, ev):
-        msg = str(ev.value or "ALERT")[:12]
         show_text = int(ev.elapsed / 0.3) % 2 == 0
 
         image = self._new_frame()
         draw = ImageDraw.Draw(image)
+        msg = self._fit_text(draw, str(ev.value or "ALERT"), font=self.font_cn)
 
         if show_text:
             self._draw_text_center(draw, 2, "!! WARNING !!", self.font_en)
@@ -348,11 +372,11 @@ class FaceEngine:
         self._display(image)
 
     def _draw_alarm_flash(self, msg, tick):
-        msg = str(msg or "ALERT")[:12]
         show_text = int(tick / 0.3) % 2 == 0
 
         image = self._new_frame()
         draw = ImageDraw.Draw(image)
+        msg = self._fit_text(draw, str(msg or "ALERT"), font=self.font_cn)
 
         if show_text:
             self._draw_text_center(draw, 2, "!! WARNING !!", self.font_en)
