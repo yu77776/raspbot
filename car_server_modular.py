@@ -174,11 +174,12 @@ class CryingDetector:
 
         self.frame_count += 1
         on_th, off_th = self._thresholds()
+        delta = max(0.0, self.smooth - (self.baseline or self.smooth))
 
         # Let baseline settle before enabling cry decisions.
         if self.frame_count > self.warmup_frames:
             if not self.crying:
-                if self.smooth >= on_th:
+                if self.smooth >= on_th and delta >= self.margin_on:
                     self.on_count += 1
                 else:
                     self.on_count = 0
@@ -186,7 +187,7 @@ class CryingDetector:
                     self.crying = True
                     self.off_count = 0
             else:
-                if self.smooth <= off_th:
+                if self.smooth <= off_th or delta <= self.margin_off:
                     self.off_count += 1
                 else:
                     self.off_count = 0
@@ -198,11 +199,11 @@ class CryingDetector:
             self.on_count = 0
             self.off_count = 0
 
-        if self.smooth <= off_th:
+        if delta <= self.margin_off:
             score = 0
         else:
-            den = max(1.0, 100.0 - float(off_th))
-            score = int(max(0.0, min(100.0, (self.smooth - off_th) * 100.0 / den)))
+            den = max(1.0, float(self.margin_on - self.margin_off))
+            score = int(max(0.0, min(100.0, (delta - self.margin_off) * 100.0 / den)))
 
         return self.crying, score
 
@@ -314,6 +315,17 @@ class CarServer:
         with self._env_lock:
             return self._latest_env
 
+    def _oled_alarm_text(self, env_packet: EnvPacket) -> str:
+        alarm = str(env_packet.alarm or '').lower()
+        if 'smoke' in alarm:
+            return f'SMOKE {env_packet.smoke}'
+        if 'cry' in alarm:
+            return 'BABY CRY'
+        return ''
+
+    def _sync_oled_alarm(self, env_packet: EnvPacket) -> None:
+        self.oled.set_alarm(self._oled_alarm_text(env_packet))
+
     def _start_env_cache_loop(self):
         def updater():
             while not self.stop_event.is_set():
@@ -338,6 +350,7 @@ class CarServer:
                         "volume": env.volume,
                         "dist_cm": env.dist_cm,
                     })
+                    self._sync_oled_alarm(env)
                 except Exception as e:
                     print(f'[OLED] update error: {e}')
                 time.sleep(0.5)
@@ -482,13 +495,7 @@ class CarServer:
                     duration=3.0,
                 )
         
-        # 报警
-        if 'smoke' in env_packet.alarm:
-            self.oled.set_alarm(f"SMOKE {env_packet.smoke}")
-        elif 'cry' in env_packet.alarm:
-            self.oled.set_alarm('BABY CRY')
-        else:
-            self.oled.set_alarm('')
+        self._sync_oled_alarm(env_packet)
 
     async def handle_client(self, ws: WebSocketServerProtocol):
         addr = ws.remote_address
