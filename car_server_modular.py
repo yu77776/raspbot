@@ -256,7 +256,7 @@ class CarServer:
         self._last_motion_command_active = False
 
         self.env_update_interval = float(os.getenv('RASPBOT_ENV_INTERVAL_SEC', '0.5'))
-        self.env_debug_interval = float(os.getenv('RASPBOT_ENV_DEBUG_INTERVAL_SEC', '5.0'))
+        self.env_debug_interval = float(os.getenv('RASPBOT_ENV_DEBUG_INTERVAL_SEC', '0'))
         self._last_env_debug_log_ts = 0.0
         self._env_lock = threading.Lock()
         self._latest_env = EnvPacket(
