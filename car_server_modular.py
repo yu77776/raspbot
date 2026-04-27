@@ -94,9 +94,12 @@ class ImuPacket:
 class EnvPacket:
     light: int
     light_lux: int
+    temp_raw: int
     temp_c: float
     smoke: int
     volume: int
+    battery_voltage: Optional[float]
+    battery_percent: Optional[int]
     crying: bool
     cry_score: int
     dist_cm: float
@@ -109,9 +112,12 @@ class EnvPacket:
         return {
             'light': self.light,
             'light_lux': self.light_lux,
+            'temp_raw': self.temp_raw,
             'temp_c': self.temp_c,
             'smoke': self.smoke,
             'volume': self.volume,
+            'battery_voltage': self.battery_voltage,
+            'battery_percent': self.battery_percent,
             'crying': self.crying,
             'cry_score': self.cry_score,
             'dist_cm': self.dist_cm,
@@ -262,9 +268,12 @@ class CarServer:
         self._latest_env = EnvPacket(
             light=0,
             light_lux=0,
+            temp_raw=0,
             temp_c=0.0,
             smoke=0,
             volume=0,
+            battery_voltage=None,
+            battery_percent=None,
             crying=False,
             cry_score=0,
             dist_cm=999.0,
@@ -302,9 +311,12 @@ class CarServer:
         return EnvPacket(
             light=int(env.get('light', 0)),
             light_lux=int(env.get('light_lux', 0)),
+            temp_raw=int(env.get('temp_raw', 0)),
             temp_c=float(env.get('temp_c', 0.0)),
             smoke=int(env.get('smoke', 0)),
             volume=volume,
+            battery_voltage=env.get('battery_voltage'),
+            battery_percent=env.get('battery_percent'),
             crying=crying,
             cry_score=cry_score,
             dist_cm=round(float(dist), 1),
@@ -358,6 +370,8 @@ class CarServer:
                         "smoke": env.smoke,
                         "volume": env.volume,
                         "dist_cm": env.dist_cm,
+                        "battery_percent": env.battery_percent,
+                        "battery_voltage": env.battery_voltage,
                     })
                     self._sync_oled_alarm(env)
                 except Exception as e:

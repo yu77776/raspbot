@@ -23,10 +23,21 @@ class PCF8591:
             'temp_c': 0,
             'smoke': 0,
             'volume': 0,
+            'battery_raw': None,
+            'battery_voltage': None,
+            'battery_percent': None,
             'smoke_alarm': False,
         }
-        # Temperature model: temp_c = k * adc + b
-        # We solve b once at startup by assuming current ambient is room temp (default 21C).
+        # Default to a physical 10K NTC divider model. If the board wiring is
+        # different, set RASPBOT_TEMP_DIVIDER=inverse. The old startup-anchored
+        # linear model remains available via RASPBOT_TEMP_MODEL=linear.
+        self.adc_vref = float(os.getenv('RASPBOT_ADC_VREF', '5.0'))
+        self.temp_model = os.getenv('RASPBOT_TEMP_MODEL', 'ntc').strip().lower()
+        self.temp_series_ohm = float(os.getenv('RASPBOT_TEMP_SERIES_OHM', '10000'))
+        self.temp_nominal_ohm = float(os.getenv('RASPBOT_TEMP_NOMINAL_OHM', '10000'))
+        self.temp_nominal_c = float(os.getenv('RASPBOT_TEMP_NOMINAL_C', '25.0'))
+        self.temp_beta = float(os.getenv('RASPBOT_TEMP_BETA', '3950'))
+        self.temp_divider = os.getenv('RASPBOT_TEMP_DIVIDER', 'direct').strip().lower()
         self.temp_room_c = float(os.getenv('RASPBOT_TEMP_ROOM_C', '21.0'))
         self.temp_adc_gain = float(os.getenv('RASPBOT_TEMP_ADC_GAIN', '-0.22'))
         self.temp_adc_bias = None
@@ -36,6 +47,32 @@ class PCF8591:
                 self.temp_adc_bias = float(preset_bias)
             except Exception:
                 self.temp_adc_bias = None
+
+        battery_channel = os.getenv('RASPBOT_BATTERY_ADC_CHANNEL', '').strip()
+        self.battery_channel = None
+        if battery_channel:
+            try:
+                ch = int(battery_channel)
+                if 0 <= ch <= 3:
+                    self.battery_channel = ch
+            except Exception:
+                self.battery_channel = None
+        self.battery_divider_ratio = float(os.getenv('RASPBOT_BATTERY_DIVIDER_RATIO', '2.0'))
+        self.battery_min_v = float(os.getenv('RASPBOT_BATTERY_MIN_V', '6.4'))
+        self.battery_max_v = float(os.getenv('RASPBOT_BATTERY_MAX_V', '8.4'))
+        print(
+            '[PCF8591] temp model '
+            f'{self.temp_model} divider={self.temp_divider} '
+            f'ntc={self.temp_nominal_ohm:.0f} beta={self.temp_beta:.0f}'
+        )
+        if self.battery_channel is None:
+            print('[PCF8591] battery disabled; set RASPBOT_BATTERY_ADC_CHANNEL=0..3 to enable')
+        else:
+            print(
+                '[PCF8591] battery model '
+                f'ch={self.battery_channel} ratio={self.battery_divider_ratio:.2f} '
+                f'range={self.battery_min_v:.2f}-{self.battery_max_v:.2f}V'
+            )
 
         self.lock = threading.Lock()
         self.bus_lock = threading.Lock()
@@ -74,26 +111,56 @@ class PCF8591:
             return 1000
         return round(10 ** ((math.log10(rs) - 6) * (-1)))
 
-    def _temp_convert(self, adc):
+    def _temp_convert_linear(self, adc):
         if self.temp_adc_bias is None:
             self.temp_adc_bias = self.temp_room_c - (self.temp_adc_gain * float(adc))
             print(
-                '[PCF8591] temp model initialized: '
+                '[PCF8591] linear temp model initialized: '
                 f'temp = {self.temp_adc_gain:.4f} * adc + {self.temp_adc_bias:.2f}'
             )
         temp_c = (self.temp_adc_gain * float(adc)) + self.temp_adc_bias
         temp_c = max(-20.0, min(80.0, temp_c))
         return round(temp_c, 1)
 
+    def _temp_convert_ntc(self, adc):
+        adc = int(max(1, min(254, int(adc))))
+        if self.temp_divider == 'inverse':
+            thermistor_ohm = self.temp_series_ohm * (255.0 - adc) / float(adc)
+        else:
+            thermistor_ohm = self.temp_series_ohm * float(adc) / (255.0 - adc)
+        if thermistor_ohm <= 0 or self.temp_nominal_ohm <= 0 or self.temp_beta <= 0:
+            return 0.0
+        nominal_k = self.temp_nominal_c + 273.15
+        temp_k = 1.0 / ((math.log(thermistor_ohm / self.temp_nominal_ohm) / self.temp_beta) + (1.0 / nominal_k))
+        temp_c = max(-20.0, min(80.0, temp_k - 273.15))
+        return round(temp_c, 1)
+
+    def _temp_convert(self, adc):
+        if self.temp_model == 'linear':
+            return self._temp_convert_linear(adc)
+        return self._temp_convert_ntc(adc)
+
     def _percent_convert(self, adc):
         return int(adc * 100 / 255)
 
+    def _battery_convert(self, adc):
+        voltage = (float(adc) * self.adc_vref / 255.0) * self.battery_divider_ratio
+        span = max(0.1, self.battery_max_v - self.battery_min_v)
+        percent = int(round((voltage - self.battery_min_v) * 100.0 / span))
+        return round(voltage, 2), max(0, min(100, percent))
+
     def _run(self):
         while not self.stop_event.is_set():
-            light = self._read(0)
-            temp = self._read(1)
-            smoke = self._read(2)
-            voltage = self._read(3)
+            channels = [self._read(ch) for ch in range(4)]
+            light = channels[0]
+            temp = channels[1]
+            smoke = channels[2]
+            volume_raw = channels[3]
+            battery_raw = channels[self.battery_channel] if self.battery_channel is not None else None
+            battery_voltage = None
+            battery_percent = None
+            if battery_raw is not None:
+                battery_voltage, battery_percent = self._battery_convert(battery_raw)
             with self.lock:
                 self.data = {
                     'light': light,
@@ -101,7 +168,10 @@ class PCF8591:
                     'temp_raw': temp,
                     'temp_c': self._temp_convert(temp),
                     'smoke': self._percent_convert(smoke),
-                    'volume': self._percent_convert(voltage),
+                    'volume': self._percent_convert(volume_raw),
+                    'battery_raw': battery_raw,
+                    'battery_voltage': battery_voltage,
+                    'battery_percent': battery_percent,
                     'smoke_alarm': smoke > self.threshold,
                 }
             time.sleep(0.5)
@@ -151,7 +221,8 @@ if __name__ == '__main__':
             print(
                 f"L:{d['light']:3d}->{d['light_lux']:3d}lux "
                 f"T:{d['temp_raw']:3d}->{d['temp_c']:5.1f}C "
-                f"S:{d['smoke']:3d} V:{d['volume']:.2f}%"
+                f"S:{d['smoke']:3d} V:{d['volume']:.2f}% "
+                f"BAT:{d.get('battery_voltage')}V/{d.get('battery_percent')}%"
             )
             time.sleep(1)
     except KeyboardInterrupt:
