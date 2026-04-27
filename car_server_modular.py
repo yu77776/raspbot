@@ -249,6 +249,8 @@ class CarServer:
         self.manual_override_sec = float(os.getenv('RASPBOT_MANUAL_OVERRIDE_SEC', '1.2'))
 
         self.env_update_interval = float(os.getenv('RASPBOT_ENV_INTERVAL_SEC', '0.5'))
+        self.env_debug_interval = float(os.getenv('RASPBOT_ENV_DEBUG_INTERVAL_SEC', '5.0'))
+        self._last_env_debug_log_ts = 0.0
         self._env_lock = threading.Lock()
         self._latest_env = EnvPacket(
             light=0,
@@ -564,7 +566,10 @@ class CarServer:
                     await ws.send(payload)
                 except websockets.ConnectionClosed:
                     return
-                print(f"[DEBUG] Env: T={env_packet.temp_c:.1f} L={env_packet.light_lux} S={env_packet.smoke}")
+                now = time.monotonic()
+                if self.env_debug_interval > 0 and now - self._last_env_debug_log_ts >= self.env_debug_interval:
+                    self._last_env_debug_log_ts = now
+                    print(f"[ENV] T={env_packet.temp_c:.1f} L={env_packet.light_lux} S={env_packet.smoke}")
                 await asyncio.sleep(self.env_update_interval)
         
         try:
