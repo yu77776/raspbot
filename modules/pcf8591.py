@@ -23,9 +23,6 @@ class PCF8591:
             'temp_c': 0,
             'smoke': 0,
             'volume': 0,
-            'battery_raw': None,
-            'battery_voltage': None,
-            'battery_percent': None,
             'smoke_alarm': False,
         }
         # Default to a physical 10K NTC divider model. If the board wiring is
@@ -48,15 +45,6 @@ class PCF8591:
             except Exception:
                 self.temp_adc_bias = None
 
-        battery_channel = os.getenv('RASPBOT_BATTERY_ADC_CHANNEL', '').strip()
-        self.battery_channel = None
-        if battery_channel:
-            try:
-                ch = int(battery_channel)
-                if 0 <= ch <= 3:
-                    self.battery_channel = ch
-            except Exception:
-                self.battery_channel = None
         self.battery_divider_ratio = float(os.getenv('RASPBOT_BATTERY_DIVIDER_RATIO', '2.0'))
         self.battery_min_v = float(os.getenv('RASPBOT_BATTERY_MIN_V', '6.4'))
         self.battery_max_v = float(os.getenv('RASPBOT_BATTERY_MAX_V', '8.4'))
@@ -65,14 +53,7 @@ class PCF8591:
             f'{self.temp_model} divider={self.temp_divider} '
             f'ntc={self.temp_nominal_ohm:.0f} beta={self.temp_beta:.0f}'
         )
-        if self.battery_channel is None:
-            print('[PCF8591] battery disabled; set RASPBOT_BATTERY_ADC_CHANNEL=0..3 to enable')
-        else:
-            print(
-                '[PCF8591] battery model '
-                f'ch={self.battery_channel} ratio={self.battery_divider_ratio:.2f} '
-                f'range={self.battery_min_v:.2f}-{self.battery_max_v:.2f}V'
-            )
+        print('[PCF8591] battery is command-line only; not sent in realtime env packets')
 
         self.lock = threading.Lock()
         self.bus_lock = threading.Lock()
@@ -149,6 +130,34 @@ class PCF8591:
         percent = int(round((voltage - self.battery_min_v) * 100.0 / span))
         return round(voltage, 2), max(0, min(100, percent))
 
+    def battery_health_from_adc(self, adc):
+        voltage, percent = self._battery_convert(adc)
+        if percent >= 35:
+            status = 'OK'
+        elif percent >= 15:
+            status = 'LOW'
+        else:
+            status = 'CRITICAL'
+        return {
+            'raw': int(adc),
+            'voltage': voltage,
+            'percent': percent,
+            'status': status,
+        }
+
+    def check_battery_health(self, channel=3, samples=8, delay=0.1):
+        channel = int(max(0, min(3, int(channel))))
+        samples = int(max(1, int(samples)))
+        values = []
+        for _ in range(samples):
+            values.append(self._read(channel))
+            time.sleep(float(delay))
+        raw = int(round(sum(values) / len(values)))
+        result = self.battery_health_from_adc(raw)
+        result['channel'] = channel
+        result['samples'] = values
+        return result
+
     def _run(self):
         while not self.stop_event.is_set():
             channels = [self._read(ch) for ch in range(4)]
@@ -156,11 +165,6 @@ class PCF8591:
             temp = channels[1]
             smoke = channels[2]
             volume_raw = channels[3]
-            battery_raw = channels[self.battery_channel] if self.battery_channel is not None else None
-            battery_voltage = None
-            battery_percent = None
-            if battery_raw is not None:
-                battery_voltage, battery_percent = self._battery_convert(battery_raw)
             with self.lock:
                 self.data = {
                     'light': light,
@@ -169,9 +173,6 @@ class PCF8591:
                     'temp_c': self._temp_convert(temp),
                     'smoke': self._percent_convert(smoke),
                     'volume': self._percent_convert(volume_raw),
-                    'battery_raw': battery_raw,
-                    'battery_voltage': battery_voltage,
-                    'battery_percent': battery_percent,
                     'smoke_alarm': smoke > self.threshold,
                 }
             time.sleep(0.5)
@@ -210,10 +211,30 @@ class PCF8591:
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='PCF8591 sensor and battery health tool')
+    parser.add_argument('--battery-health', action='store_true', help='Read one ADC channel as battery divider input')
+    parser.add_argument('--battery-channel', type=int, default=3, help='ADC channel used only for battery health check')
+    parser.add_argument('--samples', type=int, default=8)
+    parser.add_argument('--delay', type=float, default=0.1)
+    args = parser.parse_args()
+
     sensor = PCF8591()
     if not sensor.enabled:
         print('ERROR')
         exit(1)
+    if args.battery_health:
+        try:
+            result = sensor.check_battery_health(args.battery_channel, args.samples, args.delay)
+            print(
+                f"BATTERY {result['status']} "
+                f"ch={result['channel']} raw={result['raw']} "
+                f"voltage={result['voltage']:.2f}V percent={result['percent']}%"
+            )
+        finally:
+            sensor.stop()
+        exit(0)
+
     sensor.start()
     try:
         while True:
@@ -221,8 +242,7 @@ if __name__ == '__main__':
             print(
                 f"L:{d['light']:3d}->{d['light_lux']:3d}lux "
                 f"T:{d['temp_raw']:3d}->{d['temp_c']:5.1f}C "
-                f"S:{d['smoke']:3d} V:{d['volume']:.2f}% "
-                f"BAT:{d.get('battery_voltage')}V/{d.get('battery_percent')}%"
+                f"S:{d['smoke']:3d} V:{d['volume']:.2f}%"
             )
             time.sleep(1)
     except KeyboardInterrupt:

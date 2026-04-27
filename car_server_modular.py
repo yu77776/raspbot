@@ -98,8 +98,6 @@ class EnvPacket:
     temp_c: float
     smoke: int
     volume: int
-    battery_voltage: Optional[float]
-    battery_percent: Optional[int]
     crying: bool
     cry_score: int
     dist_cm: float
@@ -116,8 +114,6 @@ class EnvPacket:
             'temp_c': self.temp_c,
             'smoke': self.smoke,
             'volume': self.volume,
-            'battery_voltage': self.battery_voltage,
-            'battery_percent': self.battery_percent,
             'crying': self.crying,
             'cry_score': self.cry_score,
             'dist_cm': self.dist_cm,
@@ -272,8 +268,6 @@ class CarServer:
             temp_c=0.0,
             smoke=0,
             volume=0,
-            battery_voltage=None,
-            battery_percent=None,
             crying=False,
             cry_score=0,
             dist_cm=999.0,
@@ -315,8 +309,6 @@ class CarServer:
             temp_c=float(env.get('temp_c', 0.0)),
             smoke=int(env.get('smoke', 0)),
             volume=volume,
-            battery_voltage=env.get('battery_voltage'),
-            battery_percent=env.get('battery_percent'),
             crying=crying,
             cry_score=cry_score,
             dist_cm=round(float(dist), 1),
@@ -370,8 +362,6 @@ class CarServer:
                         "smoke": env.smoke,
                         "volume": env.volume,
                         "dist_cm": env.dist_cm,
-                        "battery_percent": env.battery_percent,
-                        "battery_voltage": env.battery_voltage,
                     })
                     self._sync_oled_alarm(env)
                 except Exception as e:

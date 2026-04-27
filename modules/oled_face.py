@@ -166,22 +166,6 @@ class FaceEngine:
         x = max(0, (128 - tw) // 2)
         self._draw_text_mixed(draw, x, y, text, font=font, fill=0)
 
-    def _draw_battery(self, draw):
-        with self.lock:
-            percent = self.env_data.get("battery_percent")
-        if percent is None:
-            return
-        try:
-            percent = int(max(0, min(100, int(percent))))
-        except Exception:
-            return
-        x, y, w, h = 104, 0, 18, 8
-        draw.rectangle([x, y, x + w, y + h], outline=1)
-        draw.rectangle([x + w + 1, y + 2, x + w + 2, y + h - 2], fill=1)
-        fill_w = int((w - 2) * percent / 100)
-        if fill_w > 0:
-            draw.rectangle([x + 1, y + 1, x + fill_w, y + h - 1], fill=1)
-
     # Public API
     def set_state(self, state):
         with self.lock:
@@ -237,7 +221,6 @@ class FaceEngine:
 
         draw.ellipse([lx - 14, 16 - ry, lx + 14, 16 + ry], fill=1)
         draw.ellipse([rx - 14, 16 - ry, rx + 14, 16 + ry], fill=1)
-        self._draw_battery(draw)
         self._display(image)
 
     def _draw_face_tracking(self, tick):
@@ -258,7 +241,6 @@ class FaceEngine:
         draw.ellipse([lx - 5 + pupil_bias, 11, lx + 5 + pupil_bias, 21], fill=1)
         draw.ellipse([rx - 5 + pupil_bias, 11, rx + 5 + pupil_bias, 21], fill=1)
 
-        self._draw_battery(draw)
         self._display(image)
 
     def _draw_face_turning(self, tick):
@@ -276,7 +258,6 @@ class FaceEngine:
                 draw.point((x, y), fill=1)
             draw.ellipse([cx - 13, 3, cx + 13, 29], outline=1, width=1)
 
-        self._draw_battery(draw)
         self._display(image)
 
     def _draw_face_sleeping(self, tick):
@@ -292,7 +273,6 @@ class FaceEngine:
         for i in range(phase + 1):
             draw.text(z_positions[i], z_chars[i], font=self.font_en, fill=1)
 
-        self._draw_battery(draw)
         self._display(image)
 
     # Event drawings
