@@ -244,9 +244,14 @@ class CarServer:
         self.stop_event = threading.Event()
         self.oled_thread = None
         self.mic_watchdog_thread = None
+        self.command_watchdog_thread = None
         self.mic_fail_safe_active = False
         self.manual_override_until = 0.0
         self.manual_override_sec = float(os.getenv('RASPBOT_MANUAL_OVERRIDE_SEC', '1.2'))
+        self.command_timeout_sec = float(os.getenv('RASPBOT_COMMAND_TIMEOUT_SEC', '0.8'))
+        self._command_lock = threading.Lock()
+        self._last_command_time = 0.0
+        self._last_motion_command_active = False
 
         self.env_update_interval = float(os.getenv('RASPBOT_ENV_INTERVAL_SEC', '0.5'))
         self.env_debug_interval = float(os.getenv('RASPBOT_ENV_DEBUG_INTERVAL_SEC', '5.0'))
@@ -379,6 +384,33 @@ class CarServer:
         self.mic_watchdog_thread = threading.Thread(target=watchdog, daemon=True)
         self.mic_watchdog_thread.start()
 
+    def _mark_command_seen(self, action: str, speed: int, left_speed: int, right_speed: int):
+        moving_actions = {'forward', 'backward', 'left', 'right', 'spin_left', 'spin_right'}
+        motion_active = action in moving_actions and max(int(speed), int(left_speed), int(right_speed)) > 0
+        with self._command_lock:
+            self._last_command_time = time.monotonic()
+            self._last_motion_command_active = motion_active
+
+    def _start_command_watchdog(self):
+        def watchdog():
+            while not self.stop_event.is_set():
+                should_stop = False
+                age = 0.0
+                with self._command_lock:
+                    if self._last_motion_command_active and self.command_timeout_sec > 0:
+                        age = time.monotonic() - self._last_command_time
+                        if age >= self.command_timeout_sec:
+                            self._last_motion_command_active = False
+                            should_stop = True
+
+                if should_stop:
+                    print(f'[SAFE] command timeout age={age:.2f}s timeout={self.command_timeout_sec:.2f}s -> motor.stop()')
+                    self.motor.stop()
+                time.sleep(0.1)
+
+        self.command_watchdog_thread = threading.Thread(target=watchdog, daemon=True)
+        self.command_watchdog_thread.start()
+
     def _start_mic_pipeline(self, asr_url=None):
         if not self.mic_enabled:
             return
@@ -413,10 +445,13 @@ class CarServer:
         self._refresh_env_cache()
         self._start_env_cache_loop()
         self._update_oled_loop()
+        self._start_command_watchdog()
         print(f'[SYS] all modules started (asr_url={self.mic_stream.asr_url}, mic_timeout={self.mic_health_timeout}s)')
 
     def stop_all(self):
         self.stop_event.set()
+        if self.command_watchdog_thread and self.command_watchdog_thread.is_alive():
+            self.command_watchdog_thread.join(timeout=1.0)
         if self.mic_watchdog_thread and self.mic_watchdog_thread.is_alive():
             self.mic_watchdog_thread.join(timeout=1.0)
         if self.oled_thread and self.oled_thread.is_alive():
@@ -454,7 +489,8 @@ class CarServer:
         if action == 'forward' and dist < 30:
             print(f'[SAFE] block forward at dist={dist:.1f}cm (<30cm)')
             action = 'stop'
-        
+        self._mark_command_seen(action, speed, cmd.left_speed, cmd.right_speed)
+
         self.motor.set_servo(1, servo1)
         self.motor.set_servo(2, servo2)
         self.oled.set_pan(servo1)
