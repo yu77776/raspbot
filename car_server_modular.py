@@ -18,9 +18,26 @@ import websockets
 logging.getLogger('websockets.server').setLevel(logging.CRITICAL)
 logging.getLogger('websockets.asyncio.server').setLevel(logging.CRITICAL)
 
-MSG_VIDEO = 0x01
 MSG_COMMAND = 0x02
 MSG_ENV = 0x03
+
+try:
+    import av
+    import cv2
+    import numpy as np
+    from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
+    from aiortc.sdp import candidate_from_sdp, candidate_to_sdp
+    HAS_WEBRTC = True
+except Exception:
+    av = None
+    cv2 = None
+    np = None
+    RTCPeerConnection = None
+    RTCSessionDescription = None
+    VideoStreamTrack = object
+    candidate_from_sdp = None
+    candidate_to_sdp = None
+    HAS_WEBRTC = False
 
 
 def _clamp_int(value: Any, min_v: int, max_v: int, default: int) -> int:
@@ -215,6 +232,31 @@ class CryingDetector:
         return self.crying, score
 
 
+class CameraVideoTrack(VideoStreamTrack):
+    def __init__(self, camera):
+        super().__init__()
+        self.camera = camera
+        self.last_seq = -1
+
+    async def recv(self):
+        pts, time_base = await self.next_timestamp()
+        frame_bgr = None
+        while frame_bgr is None:
+            seq, jpeg = self.camera.get_frame()
+            if jpeg and seq != self.last_seq:
+                self.last_seq = seq
+                arr = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                if arr is not None:
+                    frame_bgr = arr
+                    break
+            await asyncio.sleep(0.01)
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        frame = av.VideoFrame.from_ndarray(frame_rgb, format='rgb24')
+        frame.pts = pts
+        frame.time_base = time_base
+        return frame
+
+
 class CarServer:
     def __init__(self, asr_url=None, mic_health_timeout=2.0):
         self.ultrasonic = Ultrasonic()
@@ -280,6 +322,7 @@ class CarServer:
             fps=0,
         )
         self.env_thread = None
+        self.peer_connections = set()
 
     def _sample_env_packet(self):
         env = self.pcf8591.get_data()
@@ -574,23 +617,58 @@ class CarServer:
                 self._start_mic_pipeline(asr_url=auto_url)
             else:
                 print('[MIC] auto mode failed: cannot parse client ip from websocket peer')
-        last_seq = -1
-        
-        async def send_video():
-            nonlocal last_seq
-            cam_fps = int(getattr(self.camera, 'framerate', 20) or 20)
-            poll_interval = max(0.005, 1.0 / max(5, cam_fps))
-            while True:
-                seq, jpeg = self.camera.get_frame()
-                if jpeg and seq != last_seq:
-                    last_seq = seq
-                    try:
-                        await ws.send(bytes([MSG_VIDEO]) + jpeg)
-                    except websockets.ConnectionClosed:
-                        return
-                # Match polling cadence with camera FPS to avoid busy looping.
-                await asyncio.sleep(poll_interval)
-        
+        async def send_signal(payload):
+            await ws.send(json.dumps(payload, ensure_ascii=False))
+
+        async def handle_webrtc_offer(cmd_payload):
+            if not HAS_WEBRTC:
+                raise RuntimeError('aiortc is required for WebRTC video')
+            sdp = str(cmd_payload.get('sdp') or '')
+            if not sdp:
+                return
+            pc = RTCPeerConnection()
+            self.peer_connections.add(pc)
+
+            @pc.on('icecandidate')
+            async def on_icecandidate(candidate):
+                if candidate is None:
+                    return
+                await send_signal({
+                    'type': 'webrtc_ice',
+                    'candidate': candidate_to_sdp(candidate),
+                    'sdpMid': candidate.sdpMid,
+                    'sdpMLineIndex': candidate.sdpMLineIndex,
+                })
+
+            @pc.on('connectionstatechange')
+            async def on_connectionstatechange():
+                print(f'[WEBRTC] state={pc.connectionState}')
+                if pc.connectionState in {'failed', 'closed', 'disconnected'}:
+                    await pc.close()
+                    self.peer_connections.discard(pc)
+
+            pc.addTrack(CameraVideoTrack(self.camera))
+            await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type='offer'))
+            answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+            await send_signal({
+                'type': 'webrtc_answer',
+                'sdp': pc.localDescription.sdp,
+            })
+            print('[WEBRTC] answer sent')
+
+        async def handle_webrtc_ice(cmd_payload):
+            if not HAS_WEBRTC:
+                return
+            candidate_text = str(cmd_payload.get('candidate') or '')
+            if not candidate_text:
+                return
+            candidate = candidate_from_sdp(candidate_text)
+            candidate.sdpMid = cmd_payload.get('sdpMid')
+            candidate.sdpMLineIndex = cmd_payload.get('sdpMLineIndex')
+            for pc in list(self.peer_connections):
+                await pc.addIceCandidate(candidate)
+
         async def recv_commands():
             async for msg in ws:
                 try:
@@ -600,6 +678,14 @@ class CarServer:
                     elif isinstance(msg, str):
                         cmd_payload = json.loads(msg)
                     if cmd_payload is not None:
+                        msg_type = str(cmd_payload.get('type', '') or '').strip().lower() \
+                            if isinstance(cmd_payload, dict) else ''
+                        if msg_type == 'webrtc_offer':
+                            await handle_webrtc_offer(cmd_payload)
+                            continue
+                        if msg_type == 'webrtc_ice':
+                            await handle_webrtc_ice(cmd_payload)
+                            continue
                         source = str(cmd_payload.get('source', '') or '').strip().lower() \
                             if isinstance(cmd_payload, dict) else ''
                         is_app_source = source == 'app'
@@ -630,10 +716,13 @@ class CarServer:
                 await asyncio.sleep(self.env_update_interval)
         
         try:
-            await asyncio.gather(send_video(), recv_commands(), send_env())
+            await asyncio.gather(recv_commands(), send_env())
         except websockets.ConnectionClosed:
             pass
         finally:
+            for pc in list(self.peer_connections):
+                await pc.close()
+                self.peer_connections.discard(pc)
             self.motor.stop()
             self.motor.center_servos(90, 90, force=True)
             print(f'[WS] disconnected: {addr}')
