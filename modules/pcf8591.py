@@ -26,32 +26,22 @@ class PCF8591:
             'smoke_alarm': False,
         }
         # On this car, warming the temperature sensor makes AIN1 decrease.
-        # Use the measured B-value NTC model by default:
-        #   B=3430, R0=64150 ohm, Rfix=10000 ohm, NTC to GND.
+        # Use the measured B-value NTC model:
+        #   Rntc = Rfix * Vout / (Vref - Vout)
+        #   B=3430, R0=64150 ohm, Rfix=10000 ohm.
         self.adc_vref = float(os.getenv('RASPBOT_ADC_VREF', '5.0'))
-        self.temp_model = os.getenv('RASPBOT_TEMP_MODEL', 'ntc').strip().lower()
         self.temp_series_ohm = float(os.getenv('RASPBOT_TEMP_SERIES_OHM', '10000'))
         self.temp_nominal_ohm = float(os.getenv('RASPBOT_TEMP_NOMINAL_OHM', '64150'))
         self.temp_nominal_c = float(os.getenv('RASPBOT_TEMP_NOMINAL_C', '25.0'))
         self.temp_beta = float(os.getenv('RASPBOT_TEMP_BETA', '3430'))
-        self.temp_divider = os.getenv('RASPBOT_TEMP_DIVIDER', 'direct').strip().lower()
-        self.temp_room_c = float(os.getenv('RASPBOT_TEMP_ROOM_C', '21.0'))
-        self.temp_adc_gain = float(os.getenv('RASPBOT_TEMP_ADC_GAIN', '-0.22'))
-        self.temp_adc_bias = None
-        preset_bias = os.getenv('RASPBOT_TEMP_ADC_BIAS', '').strip()
-        if preset_bias:
-            try:
-                self.temp_adc_bias = float(preset_bias)
-            except Exception:
-                self.temp_adc_bias = None
 
         self.battery_divider_ratio = float(os.getenv('RASPBOT_BATTERY_DIVIDER_RATIO', '2.0'))
         self.battery_min_v = float(os.getenv('RASPBOT_BATTERY_MIN_V', '6.4'))
         self.battery_max_v = float(os.getenv('RASPBOT_BATTERY_MAX_V', '8.4'))
         print(
-            '[PCF8591] temp model '
-            f'{self.temp_model} divider={self.temp_divider} '
-            f'ntc={self.temp_nominal_ohm:.0f} beta={self.temp_beta:.0f}'
+            '[PCF8591] temp model ntc '
+            f'rfix={self.temp_series_ohm:.0f} r0={self.temp_nominal_ohm:.0f} '
+            f'beta={self.temp_beta:.0f}'
         )
         print('[PCF8591] YL-40 channel map: AIN0=light AIN1=temp AIN2=aux/smoke AIN3=volume knob')
         print('[PCF8591] battery is command-line only; not sent in realtime env packets')
@@ -84,28 +74,9 @@ class PCF8591:
         adc = int(max(0, min(255, int(adc))))
         return int(round((1.0 - (float(adc) / 255.0)) * 1000.0))
 
-    def _temp_convert_vendor(self, adc):
-        temp_c = int(max(0, min(255, int(adc)))) - 205
-        return round(max(-20.0, min(80.0, float(temp_c))), 1)
-
-    def _temp_convert_linear(self, adc):
-        if self.temp_adc_bias is None:
-            self.temp_adc_bias = self.temp_room_c - (self.temp_adc_gain * float(adc))
-            print(
-                '[PCF8591] linear temp model initialized: '
-                f'temp = {self.temp_adc_gain:.4f} * adc + {self.temp_adc_bias:.2f}'
-            )
-        temp_c = (self.temp_adc_gain * float(adc)) + self.temp_adc_bias
-        temp_c = max(-20.0, min(80.0, temp_c))
-        return round(temp_c, 1)
-
-    def _temp_convert_ntc(self, adc):
+    def _temp_resistance_from_adc(self, adc):
         adc = int(max(1, min(254, int(adc))))
-        if self.temp_divider == 'inverse':
-            thermistor_ohm = self.temp_series_ohm * (255.0 - adc) / float(adc)
-        else:
-            thermistor_ohm = self.temp_series_ohm * float(adc) / (255.0 - adc)
-        return self._temp_convert_ntc_ohm(thermistor_ohm)
+        return self.temp_series_ohm * float(adc) / (255.0 - adc)
 
     def _temp_convert_ntc_ohm(self, thermistor_ohm):
         if thermistor_ohm <= 0 or self.temp_nominal_ohm <= 0 or self.temp_beta <= 0:
@@ -115,19 +86,18 @@ class PCF8591:
         temp_c = max(-20.0, min(80.0, temp_k - 273.15))
         return round(temp_c, 1)
 
+    def _temp_convert(self, adc):
+        return self._temp_convert_ntc_ohm(self._temp_resistance_from_adc(adc))
+
     def temp_diagnostics_from_adc(self, adc):
         adc = int(max(1, min(254, int(adc))))
         voltage = float(adc) * self.adc_vref / 255.0
-        ntc_to_gnd_ohm = self.temp_series_ohm * float(adc) / (255.0 - adc)
-        ntc_to_vcc_ohm = self.temp_series_ohm * (255.0 - adc) / float(adc)
+        thermistor_ohm = self._temp_resistance_from_adc(adc)
         return {
             'raw': adc,
             'voltage': round(voltage, 3),
-            'ntc_to_gnd_ohm': int(round(ntc_to_gnd_ohm)),
-            'ntc_to_gnd_temp_c': self._temp_convert_ntc_ohm(ntc_to_gnd_ohm),
-            'ntc_to_vcc_ohm': int(round(ntc_to_vcc_ohm)),
-            'ntc_to_vcc_temp_c': self._temp_convert_ntc_ohm(ntc_to_vcc_ohm),
-            'linear_temp_c': self._temp_convert_linear(adc),
+            'thermistor_ohm': int(round(thermistor_ohm)),
+            'temp_c': self._temp_convert_ntc_ohm(thermistor_ohm),
         }
 
     def check_temp_diagnostics(self, channel=1, samples=8, delay=0.1):
@@ -142,13 +112,6 @@ class PCF8591:
         result['channel'] = channel
         result['samples'] = values
         return result
-
-    def _temp_convert(self, adc):
-        if self.temp_model == 'vendor':
-            return self._temp_convert_vendor(adc)
-        if self.temp_model == 'linear':
-            return self._temp_convert_linear(adc)
-        return self._temp_convert_ntc(adc)
 
     def _percent_convert(self, adc):
         return int(adc * 100 / 255)
@@ -246,7 +209,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PCF8591 sensor, YL-40 knob, and battery health tool')
     parser.add_argument('--battery-health', action='store_true', help='Read one ADC channel as battery divider input')
     parser.add_argument('--battery-channel', type=int, default=3, help='ADC channel used only for battery health check')
-    parser.add_argument('--temp-diagnostics', action='store_true', help='Read temperature channel and print voltage plus both NTC divider assumptions')
+    parser.add_argument('--temp-diagnostics', action='store_true', help='Read temperature channel and print the calibrated NTC calculation')
     parser.add_argument('--temp-channel', type=int, default=1, help='ADC channel used for temperature diagnostics')
     parser.add_argument('--samples', type=int, default=8)
     parser.add_argument('--delay', type=float, default=0.1)
@@ -275,14 +238,9 @@ if __name__ == '__main__':
                 f"vout={result['voltage']:.3f}V samples={result['samples']}"
             )
             print(
-                f"  ntc_to_gnd: Rntc=Rfix*Vout/(Vref-Vout)="
-                f"{result['ntc_to_gnd_ohm']}ohm temp={result['ntc_to_gnd_temp_c']:.1f}C"
+                f"  Rntc=Rfix*Vout/(Vref-Vout)="
+                f"{result['thermistor_ohm']}ohm temp={result['temp_c']:.1f}C"
             )
-            print(
-                f"  ntc_to_vcc: Rntc=Rfix*(Vref-Vout)/Vout="
-                f"{result['ntc_to_vcc_ohm']}ohm temp={result['ntc_to_vcc_temp_c']:.1f}C"
-            )
-            print(f"  linear:  temp={result['linear_temp_c']:.1f}C")
         finally:
             sensor.stop()
         exit(0)
