@@ -62,6 +62,13 @@ class Motor:
         if HAS_CAR:
             self.car.Car_Run(left, right)
 
+    def drive_tank(self, left_speed, right_speed):
+        """Drive left/right wheels with signed speeds in [-255, 255]."""
+        if HAS_CAR:
+            l = int(max(-255, min(255, int(left_speed))))
+            r = int(max(-255, min(255, int(right_speed))))
+            self.car.Control_Car(l, r)
+
     def backward(self, speed):
         if HAS_CAR:
             self.car.Car_Back(speed, speed)
