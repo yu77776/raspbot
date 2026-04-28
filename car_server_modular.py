@@ -314,6 +314,7 @@ class CarServer:
         self._command_lock = threading.Lock()
         self._last_command_time = 0.0
         self._last_motion_command_active = False
+        self.home_servos_on_startup = _as_bool(os.getenv('RASPBOT_HOME_SERVOS_ON_STARTUP', '0'))
         self.motion_cl_enabled = _as_bool(os.getenv('RASPBOT_MOTION_CLOSED_LOOP', '1'))
         self.motion_heading_kp = float(os.getenv('RASPBOT_HEADING_KP', '1.8'))
         self.motion_heading_rate_kp = float(os.getenv('RASPBOT_HEADING_RATE_KP', '0.12'))
@@ -519,10 +520,12 @@ class CarServer:
 
     def start_all(self):
         self.stop_event.clear()
-        # Always home servos on startup so hardware state is deterministic.
         self.motor.stop()
-        self.motor.center_servos(90, 90, force=True)
-        time.sleep(0.12)
+        if self.home_servos_on_startup:
+            self.motor.center_servos(90, 90, force=True)
+            time.sleep(0.12)
+        else:
+            print('[MOTOR] startup servo homing disabled')
         self.ultrasonic.start()
         self.pcf8591.start()
         self.infrared.start()
@@ -838,7 +841,6 @@ class CarServer:
                 await pc.close()
                 self.peer_connections.discard(pc)
             self.motor.stop()
-            self.motor.center_servos(90, 90, force=True)
             print(f'[WS] disconnected: {addr}')
 
 def resolve_asr_url(cli_url):
