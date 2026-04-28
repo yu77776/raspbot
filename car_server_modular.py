@@ -280,7 +280,7 @@ class CarServer:
             width=int(os.getenv('RASPBOT_WS_WIDTH', '640')),
             height=int(os.getenv('RASPBOT_WS_HEIGHT', '480')),
             quality=int(os.getenv('RASPBOT_WS_JPEG_QUALITY', '80')),
-            framerate=int(os.getenv('RASPBOT_CAMERA_FPS', '20')),
+            framerate=int(os.getenv('RASPBOT_CAMERA_FPS', '30')),
         )
         self.motor = Motor()
         self.audio = Audio(songs_dir=os.path.join(os.path.dirname(__file__), 'songs'))

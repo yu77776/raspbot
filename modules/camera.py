@@ -82,6 +82,7 @@ class Camera:
             self.ready_event.set()
 
         while not self.stop_event.is_set():
+            loop_start = time.time()
             try:
                 frame = self.picam2.capture_array('main') if HAS_CAMERA else placeholder
                 frame = self._frame_to_bgr(frame)
@@ -100,7 +101,9 @@ class Camera:
                 time.sleep(0.1)
                 continue
 
-            time.sleep(max(0.0, 1.0 / max(5, self.framerate)))
+            target_period = 1.0 / max(5, self.framerate)
+            elapsed = time.time() - loop_start
+            time.sleep(max(0.0, target_period - elapsed))
 
         if HAS_CAMERA:
             self.picam2.stop()
