@@ -58,7 +58,7 @@ class CommandPacket:
         if not isinstance(payload, dict):
             return cls()
         speed = _clamp_int(payload.get('speed', 80), 0, 255, 80)
-        audio_volume = payload.get('audio_volume', payload.get('volume', None))
+        audio_volume = payload.get('audio_volume', None)
         return cls(
             action=str(payload.get('action', 'stop') or 'stop'),
             servo_angle=_clamp_int(payload.get('servo_angle', 90), 0, 180, 90),
