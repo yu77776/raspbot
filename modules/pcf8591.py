@@ -25,11 +25,10 @@ class PCF8591:
             'volume': 0,
             'smoke_alarm': False,
         }
-        # YL-40 exposes the onboard thermistor through PCF8591, but the board
-        # divider varies between clones. Use the field-calibrated linear model
-        # by default; keep the physical NTC model available for lab calibration.
+        # YL-40 vendor examples use empirical ADC formulas instead of a
+        # physical NTC divider model. Keep NTC available for lab calibration.
         self.adc_vref = float(os.getenv('RASPBOT_ADC_VREF', '5.0'))
-        self.temp_model = os.getenv('RASPBOT_TEMP_MODEL', 'linear').strip().lower()
+        self.temp_model = os.getenv('RASPBOT_TEMP_MODEL', 'vendor').strip().lower()
         self.temp_series_ohm = float(os.getenv('RASPBOT_TEMP_SERIES_OHM', '10000'))
         self.temp_nominal_ohm = float(os.getenv('RASPBOT_TEMP_NOMINAL_OHM', '10000'))
         self.temp_nominal_c = float(os.getenv('RASPBOT_TEMP_NOMINAL_C', '25.0'))
@@ -81,17 +80,12 @@ class PCF8591:
             return 0
 
     def _light_convert(self, adc):
-        if adc == 0:
-            return 0
-        v = adc * 5.0 / 255.0
-        if v >= 5.0:
-            return 0
-        rs = 10000 * v / (5.0 - v)
-        if rs > 1000000:
-            return 0
-        if rs < 5000:
-            return 1000
-        return round(10 ** ((math.log10(rs) - 6) * (-1)))
+        adc = int(max(0, min(255, int(adc))))
+        return int(round((1.0 - (float(adc) / 255.0)) * 1000.0))
+
+    def _temp_convert_vendor(self, adc):
+        temp_c = int(max(0, min(255, int(adc)))) - 205
+        return round(max(-20.0, min(80.0, float(temp_c))), 1)
 
     def _temp_convert_linear(self, adc):
         if self.temp_adc_bias is None:
@@ -149,6 +143,8 @@ class PCF8591:
         return result
 
     def _temp_convert(self, adc):
+        if self.temp_model == 'vendor':
+            return self._temp_convert_vendor(adc)
         if self.temp_model == 'linear':
             return self._temp_convert_linear(adc)
         return self._temp_convert_ntc(adc)
