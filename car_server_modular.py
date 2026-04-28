@@ -48,6 +48,7 @@ class CommandPacket:
     speed: int = 80
     left_speed: int = 80
     right_speed: int = 80
+    audio_volume: Optional[int] = None
     detecting: bool = False
     play_song: str = ''
     stop_audio: bool = False
@@ -57,6 +58,7 @@ class CommandPacket:
         if not isinstance(payload, dict):
             return cls()
         speed = _clamp_int(payload.get('speed', 80), 0, 255, 80)
+        audio_volume = payload.get('audio_volume', payload.get('volume', None))
         return cls(
             action=str(payload.get('action', 'stop') or 'stop'),
             servo_angle=_clamp_int(payload.get('servo_angle', 90), 0, 180, 90),
@@ -64,6 +66,7 @@ class CommandPacket:
             speed=speed,
             left_speed=_clamp_int(payload.get('left_speed', speed), 0, 255, speed),
             right_speed=_clamp_int(payload.get('right_speed', speed), 0, 255, speed),
+            audio_volume=None if audio_volume is None else _clamp_int(audio_volume, 0, 100, 100),
             detecting=_as_bool(payload.get('detecting', False)),
             play_song=str(payload.get('play_song', '') or '').strip(),
             stop_audio=_as_bool(payload.get('stop_audio', False)),
@@ -488,7 +491,10 @@ class CarServer:
         action = cmd.action
         song_cmd = str(cmd.play_song or '').strip()
         is_sensor_event = song_cmd.startswith('__sensor__')
-        
+
+        if cmd.audio_volume is not None:
+            self.audio.set_volume(cmd.audio_volume)
+
         display_song_cmd = song_cmd
         if song_cmd and not is_sensor_event:
             resolved_song = self.audio.resolve_song(song_cmd)

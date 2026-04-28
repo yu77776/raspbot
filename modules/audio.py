@@ -17,6 +17,7 @@ class Audio:
     def __init__(self, songs_dir='songs'):
         self.songs_dir = songs_dir
         self.queue = []
+        self.volume = 100
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
         self.stop_flag = threading.Event()
@@ -27,8 +28,13 @@ class Audio:
         print(f'[AUDIO] init done (enabled={HAS_AUDIO})')
 
     def set_volume(self, vol):
+        try:
+            self.volume = int(max(0, min(100, int(vol))))
+        except Exception:
+            self.volume = 100
         if HAS_AUDIO:
-            pygame.mixer.music.set_volume(vol / 100.0)
+            pygame.mixer.music.set_volume(self.volume / 100.0)
+        print(f'[AUDIO] volume={self.volume}%')
 
     def enqueue(self, kind, content):
         with self.lock:
@@ -64,6 +70,7 @@ class Audio:
             return
         try:
             pygame.mixer.music.load(path)
+            pygame.mixer.music.set_volume(self.volume / 100.0)
             pygame.mixer.music.play()
             while pygame.mixer.music.get_busy():
                 if self.stop_flag.is_set():
