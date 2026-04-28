@@ -283,7 +283,10 @@ class CarServer:
         dist = self.ultrasonic.get_distance()
         track = self.infrared.get_data().get('track', [1, 1, 1, 1])
         volume = int(env.get('volume', 0))
-        crying, cry_score = self.crying_detector.update(volume)
+        # PCF8591 AIN3 on the YL-40 board is the onboard potentiometer, not an
+        # ambient microphone level. Keep exposing it as the knob percentage, but
+        # do not feed it into cry detection or it will alarm when the knob turns.
+        crying, cry_score = False, 0
         imu_data = self.imu.get_data() if self.imu.enabled else {}
         imu_payload = None
         if imu_data:

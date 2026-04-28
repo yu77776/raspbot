@@ -25,11 +25,11 @@ class PCF8591:
             'volume': 0,
             'smoke_alarm': False,
         }
-        # Default to a physical 10K NTC divider model. If the board wiring is
-        # different, set RASPBOT_TEMP_DIVIDER=inverse. The old startup-anchored
-        # linear model remains available via RASPBOT_TEMP_MODEL=linear.
+        # YL-40 exposes the onboard thermistor through PCF8591, but the board
+        # divider varies between clones. Use the field-calibrated linear model
+        # by default; keep the physical NTC model available for lab calibration.
         self.adc_vref = float(os.getenv('RASPBOT_ADC_VREF', '5.0'))
-        self.temp_model = os.getenv('RASPBOT_TEMP_MODEL', 'ntc').strip().lower()
+        self.temp_model = os.getenv('RASPBOT_TEMP_MODEL', 'linear').strip().lower()
         self.temp_series_ohm = float(os.getenv('RASPBOT_TEMP_SERIES_OHM', '10000'))
         self.temp_nominal_ohm = float(os.getenv('RASPBOT_TEMP_NOMINAL_OHM', '10000'))
         self.temp_nominal_c = float(os.getenv('RASPBOT_TEMP_NOMINAL_C', '25.0'))
@@ -53,6 +53,7 @@ class PCF8591:
             f'{self.temp_model} divider={self.temp_divider} '
             f'ntc={self.temp_nominal_ohm:.0f} beta={self.temp_beta:.0f}'
         )
+        print('[PCF8591] YL-40 channel map: AIN0=light AIN1=temp AIN2=aux/smoke AIN3=volume knob')
         print('[PCF8591] battery is command-line only; not sent in realtime env packets')
 
         self.lock = threading.Lock()
@@ -165,6 +166,7 @@ class PCF8591:
             temp = channels[1]
             smoke = channels[2]
             volume_raw = channels[3]
+            volume_percent = self._percent_convert(volume_raw)
             with self.lock:
                 self.data = {
                     'light': light,
@@ -172,7 +174,8 @@ class PCF8591:
                     'temp_raw': temp,
                     'temp_c': self._temp_convert(temp),
                     'smoke': self._percent_convert(smoke),
-                    'volume': self._percent_convert(volume_raw),
+                    'volume': volume_percent,
+                    'volume_raw': volume_raw,
                     'smoke_alarm': smoke > self.threshold,
                 }
             time.sleep(0.5)
@@ -212,7 +215,7 @@ class PCF8591:
 
 if __name__ == '__main__':
     import argparse
-    parser = argparse.ArgumentParser(description='PCF8591 sensor and battery health tool')
+    parser = argparse.ArgumentParser(description='PCF8591 sensor, YL-40 knob, and battery health tool')
     parser.add_argument('--battery-health', action='store_true', help='Read one ADC channel as battery divider input')
     parser.add_argument('--battery-channel', type=int, default=3, help='ADC channel used only for battery health check')
     parser.add_argument('--samples', type=int, default=8)
@@ -242,7 +245,7 @@ if __name__ == '__main__':
             print(
                 f"L:{d['light']:3d}->{d['light_lux']:3d}lux "
                 f"T:{d['temp_raw']:3d}->{d['temp_c']:5.1f}C "
-                f"S:{d['smoke']:3d} V:{d['volume']:.2f}%"
+                f"S:{d['smoke']:3d} VOL:{d['volume']:3d}%"
             )
             time.sleep(1)
     except KeyboardInterrupt:
