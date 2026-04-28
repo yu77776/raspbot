@@ -110,12 +110,43 @@ class PCF8591:
             thermistor_ohm = self.temp_series_ohm * (255.0 - adc) / float(adc)
         else:
             thermistor_ohm = self.temp_series_ohm * float(adc) / (255.0 - adc)
+        return self._temp_convert_ntc_ohm(thermistor_ohm)
+
+    def _temp_convert_ntc_ohm(self, thermistor_ohm):
         if thermistor_ohm <= 0 or self.temp_nominal_ohm <= 0 or self.temp_beta <= 0:
             return 0.0
         nominal_k = self.temp_nominal_c + 273.15
         temp_k = 1.0 / ((math.log(thermistor_ohm / self.temp_nominal_ohm) / self.temp_beta) + (1.0 / nominal_k))
         temp_c = max(-20.0, min(80.0, temp_k - 273.15))
         return round(temp_c, 1)
+
+    def temp_diagnostics_from_adc(self, adc):
+        adc = int(max(1, min(254, int(adc))))
+        voltage = float(adc) * self.adc_vref / 255.0
+        direct_ohm = self.temp_series_ohm * float(adc) / (255.0 - adc)
+        inverse_ohm = self.temp_series_ohm * (255.0 - adc) / float(adc)
+        return {
+            'raw': adc,
+            'voltage': round(voltage, 3),
+            'direct_ohm': int(round(direct_ohm)),
+            'direct_temp_c': self._temp_convert_ntc_ohm(direct_ohm),
+            'inverse_ohm': int(round(inverse_ohm)),
+            'inverse_temp_c': self._temp_convert_ntc_ohm(inverse_ohm),
+            'linear_temp_c': self._temp_convert_linear(adc),
+        }
+
+    def check_temp_diagnostics(self, channel=1, samples=8, delay=0.1):
+        channel = int(max(0, min(3, int(channel))))
+        samples = int(max(1, int(samples)))
+        values = []
+        for _ in range(samples):
+            values.append(self._read(channel))
+            time.sleep(float(delay))
+        raw = int(round(sum(values) / len(values)))
+        result = self.temp_diagnostics_from_adc(raw)
+        result['channel'] = channel
+        result['samples'] = values
+        return result
 
     def _temp_convert(self, adc):
         if self.temp_model == 'linear':
@@ -218,6 +249,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PCF8591 sensor, YL-40 knob, and battery health tool')
     parser.add_argument('--battery-health', action='store_true', help='Read one ADC channel as battery divider input')
     parser.add_argument('--battery-channel', type=int, default=3, help='ADC channel used only for battery health check')
+    parser.add_argument('--temp-diagnostics', action='store_true', help='Read temperature channel and print voltage plus both NTC divider assumptions')
+    parser.add_argument('--temp-channel', type=int, default=1, help='ADC channel used for temperature diagnostics')
     parser.add_argument('--samples', type=int, default=8)
     parser.add_argument('--delay', type=float, default=0.1)
     args = parser.parse_args()
@@ -234,6 +267,25 @@ if __name__ == '__main__':
                 f"ch={result['channel']} raw={result['raw']} "
                 f"voltage={result['voltage']:.2f}V percent={result['percent']}%"
             )
+        finally:
+            sensor.stop()
+        exit(0)
+    if args.temp_diagnostics:
+        try:
+            result = sensor.check_temp_diagnostics(args.temp_channel, args.samples, args.delay)
+            print(
+                f"TEMP_DIAG ch={result['channel']} raw={result['raw']} "
+                f"vout={result['voltage']:.3f}V samples={result['samples']}"
+            )
+            print(
+                f"  direct:  Rntc={result['direct_ohm']}ohm "
+                f"temp={result['direct_temp_c']:.1f}C"
+            )
+            print(
+                f"  inverse: Rntc={result['inverse_ohm']}ohm "
+                f"temp={result['inverse_temp_c']:.1f}C"
+            )
+            print(f"  linear:  temp={result['linear_temp_c']:.1f}C")
         finally:
             sensor.stop()
         exit(0)
