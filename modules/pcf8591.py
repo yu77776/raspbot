@@ -123,15 +123,15 @@ class PCF8591:
     def temp_diagnostics_from_adc(self, adc):
         adc = int(max(1, min(254, int(adc))))
         voltage = float(adc) * self.adc_vref / 255.0
-        direct_ohm = self.temp_series_ohm * float(adc) / (255.0 - adc)
-        inverse_ohm = self.temp_series_ohm * (255.0 - adc) / float(adc)
+        ntc_to_gnd_ohm = self.temp_series_ohm * float(adc) / (255.0 - adc)
+        ntc_to_vcc_ohm = self.temp_series_ohm * (255.0 - adc) / float(adc)
         return {
             'raw': adc,
             'voltage': round(voltage, 3),
-            'direct_ohm': int(round(direct_ohm)),
-            'direct_temp_c': self._temp_convert_ntc_ohm(direct_ohm),
-            'inverse_ohm': int(round(inverse_ohm)),
-            'inverse_temp_c': self._temp_convert_ntc_ohm(inverse_ohm),
+            'ntc_to_gnd_ohm': int(round(ntc_to_gnd_ohm)),
+            'ntc_to_gnd_temp_c': self._temp_convert_ntc_ohm(ntc_to_gnd_ohm),
+            'ntc_to_vcc_ohm': int(round(ntc_to_vcc_ohm)),
+            'ntc_to_vcc_temp_c': self._temp_convert_ntc_ohm(ntc_to_vcc_ohm),
             'linear_temp_c': self._temp_convert_linear(adc),
         }
 
@@ -278,12 +278,12 @@ if __name__ == '__main__':
                 f"vout={result['voltage']:.3f}V samples={result['samples']}"
             )
             print(
-                f"  direct:  Rntc={result['direct_ohm']}ohm "
-                f"temp={result['direct_temp_c']:.1f}C"
+                f"  ntc_to_gnd: Rntc=Rfix*Vout/(Vref-Vout)="
+                f"{result['ntc_to_gnd_ohm']}ohm temp={result['ntc_to_gnd_temp_c']:.1f}C"
             )
             print(
-                f"  inverse: Rntc={result['inverse_ohm']}ohm "
-                f"temp={result['inverse_temp_c']:.1f}C"
+                f"  ntc_to_vcc: Rntc=Rfix*(Vref-Vout)/Vout="
+                f"{result['ntc_to_vcc_ohm']}ohm temp={result['ntc_to_vcc_temp_c']:.1f}C"
             )
             print(f"  linear:  temp={result['linear_temp_c']:.1f}C")
         finally:
