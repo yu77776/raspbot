@@ -26,14 +26,14 @@ class PCF8591:
             'smoke_alarm': False,
         }
         # On this car, warming the temperature sensor makes AIN1 decrease.
-        # Use the startup-anchored negative-slope model by default; keep the
-        # vendor and physical NTC formulas available for diagnostics.
+        # Use the measured B-value NTC model by default:
+        #   B=3430, R0=64150 ohm, Rfix=10000 ohm, NTC to GND.
         self.adc_vref = float(os.getenv('RASPBOT_ADC_VREF', '5.0'))
-        self.temp_model = os.getenv('RASPBOT_TEMP_MODEL', 'linear').strip().lower()
+        self.temp_model = os.getenv('RASPBOT_TEMP_MODEL', 'ntc').strip().lower()
         self.temp_series_ohm = float(os.getenv('RASPBOT_TEMP_SERIES_OHM', '10000'))
-        self.temp_nominal_ohm = float(os.getenv('RASPBOT_TEMP_NOMINAL_OHM', '10000'))
+        self.temp_nominal_ohm = float(os.getenv('RASPBOT_TEMP_NOMINAL_OHM', '64150'))
         self.temp_nominal_c = float(os.getenv('RASPBOT_TEMP_NOMINAL_C', '25.0'))
-        self.temp_beta = float(os.getenv('RASPBOT_TEMP_BETA', '3950'))
+        self.temp_beta = float(os.getenv('RASPBOT_TEMP_BETA', '3430'))
         self.temp_divider = os.getenv('RASPBOT_TEMP_DIVIDER', 'direct').strip().lower()
         self.temp_room_c = float(os.getenv('RASPBOT_TEMP_ROOM_C', '21.0'))
         self.temp_adc_gain = float(os.getenv('RASPBOT_TEMP_ADC_GAIN', '-0.22'))
