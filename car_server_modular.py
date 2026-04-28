@@ -18,6 +18,7 @@ import websockets
 logging.getLogger('websockets.server').setLevel(logging.CRITICAL)
 logging.getLogger('websockets.asyncio.server').setLevel(logging.CRITICAL)
 
+MSG_VIDEO = 0x01
 MSG_COMMAND = 0x02
 MSG_ENV = 0x03
 
@@ -831,9 +832,23 @@ class CarServer:
                     self._last_env_debug_log_ts = now
                     print(f"[ENV] T={env_packet.temp_c:.1f} L={env_packet.light_lux} S={env_packet.smoke}")
                 await asyncio.sleep(self.env_update_interval)
+
+        async def send_video():
+            last_seq = -1
+            while True:
+                seq, jpeg = self.camera.get_frame()
+                if not jpeg or seq == last_seq:
+                    await asyncio.sleep(0.01)
+                    continue
+                last_seq = seq
+                try:
+                    await ws.send(bytes([MSG_VIDEO]) + jpeg)
+                except websockets.ConnectionClosed:
+                    return
+                await asyncio.sleep(0)
         
         try:
-            await asyncio.gather(recv_commands(), send_env())
+            await asyncio.gather(recv_commands(), send_env(), send_video())
         except websockets.ConnectionClosed:
             pass
         finally:
