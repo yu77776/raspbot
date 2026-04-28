@@ -25,10 +25,11 @@ class PCF8591:
             'volume': 0,
             'smoke_alarm': False,
         }
-        # YL-40 vendor examples use empirical ADC formulas instead of a
-        # physical NTC divider model. Keep NTC available for lab calibration.
+        # On this car, warming the temperature sensor makes AIN1 decrease.
+        # Use the startup-anchored negative-slope model by default; keep the
+        # vendor and physical NTC formulas available for diagnostics.
         self.adc_vref = float(os.getenv('RASPBOT_ADC_VREF', '5.0'))
-        self.temp_model = os.getenv('RASPBOT_TEMP_MODEL', 'vendor').strip().lower()
+        self.temp_model = os.getenv('RASPBOT_TEMP_MODEL', 'linear').strip().lower()
         self.temp_series_ohm = float(os.getenv('RASPBOT_TEMP_SERIES_OHM', '10000'))
         self.temp_nominal_ohm = float(os.getenv('RASPBOT_TEMP_NOMINAL_OHM', '10000'))
         self.temp_nominal_c = float(os.getenv('RASPBOT_TEMP_NOMINAL_C', '25.0'))
