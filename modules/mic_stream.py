@@ -9,8 +9,12 @@ import time
 
 import websockets
 
+from modules.base import ModuleBase
 
-class MicStream:
+
+class MicStream(ModuleBase):
+    join_timeout = 2.0
+
     def __init__(
         self,
         asr_url='ws://127.0.0.1:6006/audio',
@@ -175,20 +179,8 @@ class MicStream:
         except Exception as e:
             print(f'[MIC] fatal loop error: {e}')
 
-    def start(self):
-        if self.started and self.thread and self.thread.is_alive():
-            return
-        self.stop_event.clear()
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
-        self.started = True
-
-    def stop(self):
-        self.stop_event.set()
+    def _before_stop(self):
         self._stop_capture()
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=2.0)
-        self.started = False
 
     def get_last_ok_ts(self):
         with self.lock:

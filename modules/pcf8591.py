@@ -1,18 +1,26 @@
 ﻿#!/usr/bin/env python3
 
+import logging
 import math
 import os
 import threading
 import time
 
+from modules.base import ModuleBase
+
+logger = logging.getLogger(__name__)
+
 try:
     import smbus2
     HAS_I2C = True
-except Exception:
+except Exception as exc:
+    logger.warning("smbus2 unavailable for PCF8591: %s", exc)
     HAS_I2C = False
 
 
-class PCF8591:
+class PCF8591(ModuleBase):
+    join_timeout = 1.0
+
     def __init__(self, addr=0x48, smoke_threshold=100):
         self.addr = addr
         self.threshold = smoke_threshold
@@ -59,7 +67,7 @@ class PCF8591:
                 self.enabled = True
                 print('[PCF8591] OK')
             except Exception as e:
-                print(f'[PCF8591] FAIL: {e}')
+                logger.error('[PCF8591] FAIL: %s', e)
 
     def _read(self, ch):
         try:
@@ -67,7 +75,8 @@ class PCF8591:
                 self.bus.write_byte(self.addr, 0x40 | ch)
                 self.bus.read_byte(self.addr)
                 return self.bus.read_byte(self.addr)
-        except Exception:
+        except Exception as exc:
+            logger.warning('[PCF8591] read ch=%s failed: %s', ch, exc)
             return 0
 
     def _light_convert(self, adc):
@@ -171,28 +180,19 @@ class PCF8591:
                 }
             time.sleep(0.5)
 
-    def start(self):
+    def _before_start(self):
         if not self.enabled and HAS_I2C:
             try:
                 self.bus = smbus2.SMBus(1)
                 self.enabled = True
             except Exception as e:
-                print(f'[PCF8591] FAIL: {e}')
+                logger.error('[PCF8591] FAIL: %s', e)
                 self.enabled = False
         if not self.enabled:
-            return
-        if self.started and self.thread and self.thread.is_alive():
-            return
-        self.stop_event.clear()
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
-        self.started = True
+            return False
+        return True
 
-    def stop(self):
-        self.stop_event.set()
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=1.0)
-        self.started = False
+    def _after_stop(self):
         if self.bus:
             with self.bus_lock:
                 self.bus.close()

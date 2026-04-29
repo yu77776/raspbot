@@ -5,6 +5,8 @@ import os
 import threading
 import time
 
+from modules.base import ModuleBase
+
 try:
     import pygame  # type: ignore[import-not-found]
     pygame.mixer.init()
@@ -13,7 +15,9 @@ except ImportError:
     HAS_AUDIO = False
 
 
-class Audio:
+class Audio(ModuleBase):
+    join_timeout = 1.0
+
     def __init__(self, songs_dir='songs'):
         self.songs_dir = songs_dir
         self.queue = []
@@ -107,20 +111,6 @@ class Audio:
                     self._tts(content)
             else:
                 time.sleep(0.1)
-
-    def start(self):
-        if self.started and self.thread and self.thread.is_alive():
-            return
-        self.stop_event.clear()
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
-        self.started = True
-
-    def stop(self):
-        self.stop_event.set()
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=1.0)
-        self.started = False
 
     def clear(self):
         self.stop_flag.set()

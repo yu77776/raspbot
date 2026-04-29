@@ -4,6 +4,8 @@
 import threading
 import time
 
+from modules.base import ModuleBase
+
 try:
     import RPi.GPIO as GPIO
     HAS_GPIO = True
@@ -12,7 +14,9 @@ except ImportError:
     HAS_GPIO = False
 
 
-class Ultrasonic:
+class Ultrasonic(ModuleBase):
+    join_timeout = 1.0
+
     def __init__(self, trig_pin=16, echo_pin=18):
         self.trig = trig_pin
         self.echo = echo_pin
@@ -73,21 +77,8 @@ class Ultrasonic:
                     self.distance = median
             time.sleep(0.1)
 
-    def start(self):
-        if not self.enabled:
-            return
-        if self.started and self.thread and self.thread.is_alive():
-            return
-        self.stop_event.clear()
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
-        self.started = True
-
-    def stop(self):
-        self.stop_event.set()
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=1.0)
-        self.started = False
+    def _can_start(self) -> bool:
+        return bool(self.enabled)
 
     def get_distance(self):
         with self.lock:

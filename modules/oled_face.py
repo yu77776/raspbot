@@ -7,9 +7,12 @@ Render priority: alarm > event > face_state.
 """
 
 import math
+import logging
 import random
 import threading
 import time
+
+logger = logging.getLogger(__name__)
 
 try:
     from luma.core.interface.serial import i2c as luma_i2c
@@ -17,7 +20,8 @@ try:
     from PIL import Image, ImageDraw, ImageFont
 
     HAS_OLED = True
-except Exception:
+except Exception as exc:
+    logger.warning("OLED dependencies unavailable: %s", exc)
     HAS_OLED = False
 
 
@@ -99,14 +103,15 @@ class FaceEngine:
 
             print(f"[OLED] OK cn={self.font_cn_name} en={self.font_en_name}")
         except Exception as exc:
-            print(f"[OLED] FAIL: {exc}")
+            logger.error("[OLED] FAIL: %s", exc)
             self.device = None
 
     def _load_font(self, candidates, size):
         for path in candidates:
             try:
                 return ImageFont.truetype(path, size), path
-            except Exception:
+            except Exception as exc:
+                logger.warning("[OLED] font load failed path=%s: %s", path, exc)
                 continue
         return ImageFont.load_default(), "PIL_default"
 
@@ -128,7 +133,8 @@ class FaceEngine:
             ch_font = self._font_for_char(ch, font)
             try:
                 advance = draw.textlength(ch, font=ch_font)
-            except Exception:
+            except Exception as exc:
+                logger.warning("[OLED] textlength failed, fallback to textbbox: %s", exc)
                 box = draw.textbbox((0, 0), ch, font=ch_font)
                 advance = (box[2] - box[0]) if box else 0
             width += max(1, int(round(advance)))
@@ -140,7 +146,8 @@ class FaceEngine:
             draw.text((x, y), ch, font=ch_font, fill=fill)
             try:
                 advance = draw.textlength(ch, font=ch_font)
-            except Exception:
+            except Exception as exc:
+                logger.warning("[OLED] textlength failed, fallback to textbbox: %s", exc)
                 box = draw.textbbox((0, 0), ch, font=ch_font)
                 advance = (box[2] - box[0]) if box else 0
             x += max(1, int(round(advance)))
@@ -178,7 +185,8 @@ class FaceEngine:
     def set_pan(self, angle):
         try:
             offset = int((float(angle) - 90.0) / 45.0 * 9.0)
-        except Exception:
+        except Exception as exc:
+            logger.warning("[OLED] invalid pan angle %r: %s", angle, exc)
             offset = 0
         with self.lock:
             self.eye_offset = max(-10, min(10, offset))
@@ -428,7 +436,7 @@ class FaceEngine:
                 now = time.monotonic()
                 if now - self._last_draw_error_log_ts >= 5.0:
                     self._last_draw_error_log_ts = now
-                    print(f"[OLED] draw error: {exc}")
+                    logger.error("[OLED] draw error: %s", exc)
 
             time.sleep(0.05)
             tick += 0.05

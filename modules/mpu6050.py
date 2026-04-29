@@ -5,6 +5,8 @@ import threading
 import time
 from collections import deque
 
+from modules.base import ModuleBase
+
 try:
     import smbus2
     HAS_I2C = True
@@ -13,7 +15,9 @@ except Exception:
     HAS_I2C = False
 
 
-class MPU6050:
+class MPU6050(ModuleBase):
+    join_timeout = 1.5
+
     REG_SMPLRT_DIV = 0x19
     REG_CONFIG = 0x1A
     REG_GYRO_CONFIG = 0x1B
@@ -329,25 +333,14 @@ class MPU6050:
             spend = time.monotonic() - t0
             time.sleep(max(0.0, self.sample_dt - spend))
 
-    def start(self):
+    def _before_start(self):
         if not self.enabled and HAS_I2C:
             self._open()
         if not self.enabled:
-            return
-        if self.started and self.thread and self.thread.is_alive():
-            return
+            return False
         if self.auto_calibrate and not self.calibrated:
             self.calibrate(self.calibrate_timeout)
-        self.stop_event.clear()
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
-        self.started = True
-
-    def stop(self):
-        self.stop_event.set()
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=1.5)
-        self.started = False
+        return True
 
     def get_data(self):
         with self.lock:

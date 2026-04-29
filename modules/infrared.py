@@ -3,6 +3,8 @@
 import threading
 import time
 
+from modules.base import ModuleBase
+
 try:
     import RPi.GPIO as GPIO
     HAS_GPIO = True
@@ -11,7 +13,9 @@ except ImportError:
     HAS_GPIO = False
 
 
-class Infrared:
+class Infrared(ModuleBase):
+    join_timeout = 1.0
+
     def __init__(self, track_pins=[13, 15, 11, 7]):
         self.track_pins = track_pins
         self.data = {'track': [1, 1, 1, 1]}
@@ -45,21 +49,8 @@ class Infrared:
                 print(f'[TRACK] read error: {e}')
             time.sleep(0.05)
 
-    def start(self):
-        if not self.enabled:
-            return
-        if self.started and self.thread and self.thread.is_alive():
-            return
-        self.stop_event.clear()
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
-        self.started = True
-
-    def stop(self):
-        self.stop_event.set()
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=1.0)
-        self.started = False
+    def _can_start(self) -> bool:
+        return bool(self.enabled)
 
     def get_data(self):
         with self.lock:
