@@ -48,19 +48,6 @@ def _clamp_int(value: Any, min_v: int, max_v: int, default: int) -> int:
         return int(default)
 
 
-def _clamp_float(value: float, min_v: float, max_v: float) -> float:
-    return max(float(min_v), min(float(max_v), float(value)))
-
-
-def _wrap_angle_deg(angle: float) -> float:
-    a = float(angle)
-    while a > 180.0:
-        a -= 360.0
-    while a < -180.0:
-        a += 360.0
-    return a
-
-
 def _as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -326,20 +313,6 @@ class CarServer:
         self._last_command_time = 0.0
         self._last_motion_command_active = False
         self.home_servos_on_startup = _as_bool(os.getenv('RASPBOT_HOME_SERVOS_ON_STARTUP', '0'))
-        self.motion_cl_enabled = _as_bool(os.getenv('RASPBOT_MOTION_CLOSED_LOOP', '1'))
-        self.motion_heading_kp = float(os.getenv('RASPBOT_HEADING_KP', '1.8'))
-        self.motion_heading_rate_kp = float(os.getenv('RASPBOT_HEADING_RATE_KP', '0.12'))
-        self.motion_heading_trim_max = int(max(0, min(120, int(os.getenv('RASPBOT_HEADING_TRIM_MAX', '45')))))
-        self.motion_spin_rate_gain = float(os.getenv('RASPBOT_SPIN_RATE_GAIN', '0.90'))
-        self.motion_spin_yaw_kp = float(os.getenv('RASPBOT_SPIN_YAW_KP', '0.35'))
-        self.motion_spin_rate_kp = float(os.getenv('RASPBOT_SPIN_RATE_KP', '0.20'))
-        self.motion_spin_trim_max = int(max(0, min(120, int(os.getenv('RASPBOT_SPIN_TRIM_MAX', '80')))))
-        self.motion_yaw_sign = -1.0 if str(os.getenv('RASPBOT_IMU_YAW_SIGN', '1')).strip() in {'-1', '-1.0'} else 1.0
-        self._motion_last_action = 'stop'
-        self._heading_target_yaw: Optional[float] = None
-        self._spin_target_yaw: Optional[float] = None
-        self._spin_last_ts = time.monotonic()
-
         self.env_update_interval = float(os.getenv('RASPBOT_ENV_INTERVAL_SEC', '0.5'))
         self.env_debug_interval = float(os.getenv('RASPBOT_ENV_DEBUG_INTERVAL_SEC', '0'))
         self._last_env_debug_log_ts = 0.0
@@ -365,21 +338,6 @@ class CarServer:
         )
         self.env_thread = None
         self.peer_connections = set()
-
-    def _set_tank_speed(self, left: float, right: float):
-        self.motor.drive_tank(int(round(_clamp_float(left, -255, 255))), int(round(_clamp_float(right, -255, 255))))
-
-    def _read_imu_motion(self, env_packet: EnvPacket) -> Optional[Tuple[float, float]]:
-        imu_payload = env_packet.imu
-        if not imu_payload or not imu_payload.healthy or not imu_payload.calibrated:
-            return None
-        yaw = _wrap_angle_deg(float(imu_payload.yaw) * self.motion_yaw_sign)
-        yaw_rate = float(imu_payload.yaw_rate) * self.motion_yaw_sign
-        return yaw, yaw_rate
-
-    def _reset_motion_targets(self):
-        self._heading_target_yaw = None
-        self._spin_target_yaw = None
 
     def _set_remote_cry_state(self, cmd: CommandPacket):
         if cmd.remote_crying is None and cmd.remote_cry_score is None and cmd.remote_alarm is None:
@@ -638,95 +596,13 @@ class CarServer:
         self.motor.set_servo(2, servo2)
         self.oled.set_pan(servo1)
 
-        imu_motion = self._read_imu_motion(env_packet) if self.motion_cl_enabled else None
-        entering_new_action = action != self._motion_last_action
-
-        if action == 'forward':
-            if imu_motion is None:
-                self.motor.forward(cmd.left_speed, cmd.right_speed)
-            else:
-                yaw, yaw_rate = imu_motion
-                if entering_new_action or self._heading_target_yaw is None:
-                    self._heading_target_yaw = yaw
-                yaw_err = _wrap_angle_deg(self._heading_target_yaw - yaw)
-                corr = (
-                    self.motion_heading_kp * yaw_err
-                    - self.motion_heading_rate_kp * yaw_rate
-                )
-                corr = _clamp_float(corr, -self.motion_heading_trim_max, self.motion_heading_trim_max)
-                self._set_tank_speed(cmd.left_speed - corr, cmd.right_speed + corr)
-                self._spin_target_yaw = None
-        elif action == 'backward':
-            if imu_motion is None:
-                self.motor.backward(speed)
-            else:
-                yaw, yaw_rate = imu_motion
-                if entering_new_action or self._heading_target_yaw is None:
-                    self._heading_target_yaw = yaw
-                yaw_err = _wrap_angle_deg(self._heading_target_yaw - yaw)
-                corr = (
-                    self.motion_heading_kp * yaw_err
-                    - self.motion_heading_rate_kp * yaw_rate
-                )
-                corr = _clamp_float(corr, -self.motion_heading_trim_max, self.motion_heading_trim_max)
-                self._set_tank_speed(-cmd.left_speed - corr, -cmd.right_speed + corr)
-                self._spin_target_yaw = None
-        elif action == 'spin_left':
-            if imu_motion is None:
-                self.motor.spin_left(speed)
-            else:
-                yaw, yaw_rate = imu_motion
-                now = time.monotonic()
-                dt = _clamp_float(now - self._spin_last_ts, 0.01, 0.2)
-                self._spin_last_ts = now
-                if entering_new_action or self._spin_target_yaw is None:
-                    self._spin_target_yaw = yaw
-                desired_rate = max(0.0, float(speed) * self.motion_spin_rate_gain)
-                self._spin_target_yaw = _wrap_angle_deg(self._spin_target_yaw + desired_rate * dt)
-                yaw_err = _wrap_angle_deg(self._spin_target_yaw - yaw)
-                rate_err = desired_rate - yaw_rate
-                corr = (
-                    self.motion_spin_yaw_kp * yaw_err
-                    + self.motion_spin_rate_kp * rate_err
-                )
-                corr = _clamp_float(corr, -self.motion_spin_trim_max, self.motion_spin_trim_max)
-                self._set_tank_speed(-speed - corr, speed + corr)
-                self._heading_target_yaw = None
-        elif action == 'spin_right':
-            if imu_motion is None:
-                self.motor.spin_right(speed)
-            else:
-                yaw, yaw_rate = imu_motion
-                now = time.monotonic()
-                dt = _clamp_float(now - self._spin_last_ts, 0.01, 0.2)
-                self._spin_last_ts = now
-                if entering_new_action or self._spin_target_yaw is None:
-                    self._spin_target_yaw = yaw
-                desired_rate = max(0.0, float(speed) * self.motion_spin_rate_gain)
-                self._spin_target_yaw = _wrap_angle_deg(self._spin_target_yaw - desired_rate * dt)
-                yaw_err = _wrap_angle_deg(self._spin_target_yaw - yaw)
-                rate_err = -desired_rate - yaw_rate
-                corr = (
-                    self.motion_spin_yaw_kp * yaw_err
-                    + self.motion_spin_rate_kp * rate_err
-                )
-                corr = _clamp_float(corr, -self.motion_spin_trim_max, self.motion_spin_trim_max)
-                self._set_tank_speed(speed - corr, -speed + corr)
-                self._heading_target_yaw = None
-        elif action == 'left':
-            self.motor.left(speed)
-        elif action == 'right':
-            self.motor.right(speed)
-        else:
-            self.motor.stop()
-            self._reset_motion_targets()
-
-        if action not in {'forward', 'backward'}:
-            self._heading_target_yaw = None
-        if action not in {'spin_left', 'spin_right'}:
-            self._spin_target_yaw = None
-            self._spin_last_ts = time.monotonic()
-        self._motion_last_action = action
+        self.motor.execute_motion(
+            action,
+            speed,
+            left_speed=cmd.left_speed,
+            right_speed=cmd.right_speed,
+            env_packet=env_packet,
+        )
         
         # OLED 表情状态映射
         if action in ('spin_left', 'spin_right'):
