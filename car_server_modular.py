@@ -83,6 +83,9 @@ class CommandPacket:
     detecting: bool = False
     play_song: str = ''
     stop_audio: bool = False
+    remote_crying: Optional[bool] = None
+    remote_cry_score: Optional[int] = None
+    remote_alarm: Optional[str] = None
 
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]):
@@ -90,6 +93,10 @@ class CommandPacket:
             return cls()
         speed = _clamp_int(payload.get('speed', 80), 0, 255, 80)
         audio_volume = payload.get('audio_volume', None)
+        crying_payload = payload.get('crying', payload.get('remote_crying', None))
+        cry_score_payload = payload.get('cry_score', payload.get('remote_cry_score', None))
+        alarm_payload = payload.get('alarm', payload.get('remote_alarm', None))
+        remote_alarm = None if alarm_payload is None else str(alarm_payload).strip()
         return cls(
             action=str(payload.get('action', 'stop') or 'stop'),
             servo_angle=_clamp_int(payload.get('servo_angle', 90), 0, 180, 90),
@@ -101,6 +108,9 @@ class CommandPacket:
             detecting=_as_bool(payload.get('detecting', False)),
             play_song=str(payload.get('play_song', '') or '').strip(),
             stop_audio=_as_bool(payload.get('stop_audio', False)),
+            remote_crying=None if crying_payload is None else _as_bool(crying_payload),
+            remote_cry_score=None if cry_score_payload is None else _clamp_int(cry_score_payload, 0, 100, 0),
+            remote_alarm=remote_alarm,
         )
 
 
@@ -334,6 +344,10 @@ class CarServer:
         self.env_debug_interval = float(os.getenv('RASPBOT_ENV_DEBUG_INTERVAL_SEC', '0'))
         self._last_env_debug_log_ts = 0.0
         self._env_lock = threading.Lock()
+        self._remote_cry_lock = threading.Lock()
+        self._remote_crying: Optional[bool] = None
+        self._remote_cry_score: Optional[int] = None
+        self._remote_alarm: Optional[str] = None
         self._latest_env = EnvPacket(
             light=0,
             light_lux=0,
@@ -367,6 +381,18 @@ class CarServer:
         self._heading_target_yaw = None
         self._spin_target_yaw = None
 
+    def _set_remote_cry_state(self, cmd: CommandPacket):
+        if cmd.remote_crying is None and cmd.remote_cry_score is None and cmd.remote_alarm is None:
+            return
+        with self._remote_cry_lock:
+            self._remote_crying = cmd.remote_crying
+            self._remote_cry_score = cmd.remote_cry_score
+            self._remote_alarm = cmd.remote_alarm
+
+    def _get_remote_cry_state(self) -> Tuple[Optional[bool], Optional[int], Optional[str]]:
+        with self._remote_cry_lock:
+            return self._remote_crying, self._remote_cry_score, self._remote_alarm
+
     def _sample_env_packet(self):
         env = self.pcf8591.get_data()
         dist = self.ultrasonic.get_distance()
@@ -376,6 +402,11 @@ class CarServer:
         # ambient microphone level. Keep exposing it as the knob percentage, but
         # do not feed it into cry detection or it will alarm when the knob turns.
         crying, cry_score = False, 0
+        remote_crying, remote_cry_score, remote_alarm = self._get_remote_cry_state()
+        if remote_crying is not None:
+            crying = remote_crying
+        if remote_cry_score is not None:
+            cry_score = remote_cry_score
         imu_data = self.imu.get_data() if self.imu.enabled else {}
         imu_payload = None
         if imu_data:
@@ -393,6 +424,8 @@ class CarServer:
             alarms.append('smoke')
         if crying and cry_score >= self.cry_alarm_score_min:
             alarms.append('cry')
+        if remote_alarm:
+            alarms.append(remote_alarm)
         alarm = '+'.join(alarms)
         return EnvPacket(
             light=int(env.get('light', 0)),
@@ -572,6 +605,7 @@ class CarServer:
     def execute_command(self, cmd: CommandPacket):
         if not isinstance(cmd, CommandPacket):
             cmd = CommandPacket.from_dict(cmd)
+        self._set_remote_cry_state(cmd)
         servo1 = cmd.servo_angle
         servo2 = cmd.servo_angle2
         speed = cmd.speed
