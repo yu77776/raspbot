@@ -15,6 +15,10 @@ except ImportError:
     HAS_AUDIO = False
 
 
+def _safe_text(value):
+    return str(value).encode('utf-8', errors='backslashreplace').decode('utf-8')
+
+
 class Audio(ModuleBase):
     join_timeout = 1.0
 
@@ -50,16 +54,24 @@ class Audio(ModuleBase):
             return name
 
         try:
-            entries = os.listdir(os.fsencode(self.songs_dir))
+            entries = os.listdir(self.songs_dir)
             candidates = sorted(
                 f for f in entries
-                if f.lower().endswith((b'.mp3', b'.ogg', b'.wav', b'.flac', b'.m4a'))
+                if f.lower().endswith(('.mp3', '.ogg', '.wav', '.flac', '.m4a'))
             )
         except Exception as e:
-            print(f'[AUDIO] list songs failed: {e}')
+            print(f'[AUDIO] list songs failed: {_safe_text(e)}')
             return ''
 
-        return os.fsdecode(candidates[0]) if candidates else ''
+        clean = [f for f in candidates if not any('\udc80' <= ch <= '\udcff' for ch in f)]
+        return (clean or candidates)[0] if candidates else ''
+
+    def _wait_until_finished(self):
+        while pygame.mixer.music.get_busy():
+            if self.stop_flag.is_set():
+                pygame.mixer.music.stop()
+                break
+            time.sleep(0.1)
 
     def _play_file(self, filename):
         if not HAS_AUDIO:
@@ -70,19 +82,24 @@ class Audio(ModuleBase):
             return
         path = os.path.join(self.songs_dir, filename)
         if not os.path.exists(path):
-            print(f'[AUDIO] file not found: {path}')
+            print(f'[AUDIO] file not found: {_safe_text(path)}')
             return
         try:
             pygame.mixer.music.load(path)
             pygame.mixer.music.set_volume(self.volume / 100.0)
             pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy():
-                if self.stop_flag.is_set():
-                    pygame.mixer.music.stop()
-                    break
-                time.sleep(0.1)
+            self._wait_until_finished()
         except Exception as e:
-            print(f'[AUDIO] playback error: {e}')
+            print(f'[AUDIO] path playback failed: {_safe_text(e)}')
+            try:
+                namehint = os.path.splitext(filename)[1].lstrip('.').lower()
+                with open(path, 'rb') as fh:
+                    pygame.mixer.music.load(fh, namehint)
+                    pygame.mixer.music.set_volume(self.volume / 100.0)
+                    pygame.mixer.music.play()
+                    self._wait_until_finished()
+            except Exception as fallback_exc:
+                print(f'[AUDIO] playback error: {_safe_text(fallback_exc)}')
 
     def _tts(self, text):
         try:
@@ -94,7 +111,7 @@ class Audio(ModuleBase):
                 self.tts_engine.say(text)
                 self.tts_engine.runAndWait()
         except Exception as e:
-            print(f'[AUDIO] tts error: {e}')
+            print(f'[AUDIO] tts error: {_safe_text(e)}')
 
     def _run(self):
         while not self.stop_event.is_set():
