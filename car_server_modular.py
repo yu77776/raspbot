@@ -835,12 +835,19 @@ class CarServer:
 
         async def send_video():
             last_seq = -1
+            last_change_t = time.monotonic()
+            last_stale_log_t = 0.0
             while True:
                 seq, jpeg = self.camera.get_frame()
                 if not jpeg or seq == last_seq:
+                    now = time.monotonic()
+                    if now - last_change_t >= 2.0 and now - last_stale_log_t >= 2.0:
+                        last_stale_log_t = now
+                        print(f'[CAM] stale video stream seq={seq} has_jpeg={bool(jpeg)} fps={self.camera.get_fps()}')
                     await asyncio.sleep(0.01)
                     continue
                 last_seq = seq
+                last_change_t = time.monotonic()
                 try:
                     await ws.send(bytes([MSG_VIDEO]) + jpeg)
                 except websockets.ConnectionClosed:
