@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Warm Amber Theme -->
+    <color name="bg_deepest">#0D0D12</color>
+    <color name="bg_surface">#12121A</color>
+    <color name="bg_card">#08FFFFFF</color>
+    <color name="bg_elevated">#0DFFFFFF</color>
+    <color name="border">#10FFFFFF</color>
+    <color name="border_strong">#1AFFFFFF</color>
+
+    <!-- Amber accents -->
+    <color name="amber">#D4A574</color>
+    <color name="amber_light">#E8C39A</color>
+    <color name="amber_dim">#A07A55</color>
+    <color name="amber_glow">#26D4A574</color>
+
+    <!-- Semantic -->
+    <color name="red">#D45A5A</color>
+    <color name="red_dim">#1FD45A5A</color>
+    <color name="red_border">#33D45A5A</color>
+    <color name="green">#7AB88A</color>
+    <color name="yellow">#C9A84A</color>
+
+    <!-- Text -->
+    <color name="text_primary">#F0ECE4</color>
+    <color name="text_secondary">#A09888</color>
+    <color name="text_tertiary">#706858</color>
+
+    <!-- Legacy (keep for compatibility) -->
+    <color name="black">#0D0D12</color>
+    <color name="white">#F0ECE4</color>
+</resources>

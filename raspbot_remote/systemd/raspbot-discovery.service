@@ -1,0 +1,16 @@
+﻿[Unit]
+Description=Raspbot UDP discovery broadcaster
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/raspbot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /home/pi/raspbot/discovery_broadcaster.py --name raspbot --service-port 5001 --broadcast-port 5002 --interval 1.0
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

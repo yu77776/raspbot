@@ -1,0 +1,16 @@
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.log
+server.log
+*.bak
+*.bak2
+.lgd-nfy0
+songs/
+*.mp3
+*.wav
+*.flac
+*.local.json
+.env
+.env.*

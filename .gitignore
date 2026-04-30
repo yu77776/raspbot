@@ -1,0 +1,56 @@
+# Local private configuration / secrets
+raspbot1/raspbot.local.json
+raspbot1/baidu_asr.local.json
+**/*.local.json
+**/.env
+**/.env.*
+
+# Python generated files
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Runtime logs and captured telemetry
+raspbot1/logs/
+*.log
+*.csv
+
+# Large local model/media artifacts
+raspbot1/best.pt
+*.pt
+*.onnx
+*.engine
+raspbot_remote/songs/
+*.mp3
+*.wav
+*.flac
+
+# Android / Gradle generated files
+RaspbotApp/.gradle/
+RaspbotApp/build/
+RaspbotApp/app/build/
+RaspbotApp/local.properties
+RaspbotApp/**/*.apk
+RaspbotApp/**/*.aab
+RaspbotApp/**/*.jks
+RaspbotApp/**/*.keystore
+RaspbotApp/.idea/caches/
+RaspbotApp/.idea/libraries/
+RaspbotApp/.idea/modules.xml
+RaspbotApp/.idea/workspace.xml
+RaspbotApp/.idea/navEditor.xml
+RaspbotApp/.idea/assetWizardSettings.xml
+*.iml
+
+# Editor / OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Legacy backups
+*.bak
+*.bak2
+.lgd-nfy0
+raspbot_remote/.git_car_backup/

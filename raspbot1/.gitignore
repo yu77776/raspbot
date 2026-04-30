@@ -1,0 +1,27 @@
+# Private local config / secrets
+raspbot.local.json
+baidu_asr.local.json
+*.local.json
+.env
+.env.*
+
+# Runtime logs and generated caches
+logs/
+*.log
+*.csv
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Large local model/runtime artifacts
+best.pt
+*.pt
+*.onnx
+*.engine
+
+# Editor / OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
