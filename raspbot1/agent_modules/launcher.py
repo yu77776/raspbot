@@ -225,8 +225,11 @@ while true; do
   if [ "$age" -ge "$timeout_sec" ]; then
     echo "[WATCHDOG] launcher heartbeat stale age=${{age}}s timeout=${{timeout_sec}}s -> stop car server"
     kill "$car_pid" 2>/dev/null || true
-    sleep 1
-    kill -9 "$car_pid" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      kill -0 "$car_pid" 2>/dev/null || break
+      sleep 1
+    done
+    kill -0 "$car_pid" 2>/dev/null && kill -9 "$car_pid" 2>/dev/null || true
     rm -f "$pid_file" "$heartbeat_file"
     exit 0
   fi
@@ -249,7 +252,7 @@ if [ -f {REMOTE_PID} ]; then
     kill "$old" 2>/dev/null || true
   fi
 fi
-sleep 1
+sleep 3
 for pid in $(pgrep -f 'car_server_modular.py' 2>/dev/null || true); do
   if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then
     continue

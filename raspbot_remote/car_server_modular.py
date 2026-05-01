@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys, os, asyncio, json, argparse, threading, time, logging
+import sys, os, asyncio, json, argparse, threading, time, logging, signal
 from typing import Optional, Tuple
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -416,6 +416,19 @@ async def main(host, port, asr_url, mic_health_timeout):
         asr_url=asr_url,
         mic_health_timeout=mic_health_timeout,
     )
+    loop = asyncio.get_running_loop()
+    shutdown = loop.create_future()
+
+    def request_shutdown():
+        if not shutdown.done():
+            shutdown.set_result(None)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, request_shutdown)
+        except (NotImplementedError, RuntimeError, ValueError):
+            signal.signal(sig, lambda _signum, _frame: request_shutdown())
+
     server.start_all()
 
     try:
@@ -430,7 +443,7 @@ async def main(host, port, asr_url, mic_health_timeout):
             server.handle_client, host, port,
             max_size=10*1024*1024, ping_interval=20, ping_timeout=10
         ):
-            await asyncio.Future()
+            await shutdown
     finally:
         print('[SYS] stopping all modules')
         server.stop_all()

@@ -122,6 +122,10 @@ class FaceEngine:
         if self.device:
             self.device.display(image)
 
+    def _clear_display(self):
+        if self.device:
+            self.device.display(self._new_frame())
+
     def _font_for_char(self, ch, preferred=None):
         if ord(ch) < 128:
             return preferred or self.font_en
@@ -450,3 +454,4 @@ class FaceEngine:
 
     def stop(self):
         self.stop_event.set()
+        self._clear_display()

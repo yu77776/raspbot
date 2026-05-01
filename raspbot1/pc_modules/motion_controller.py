@@ -98,7 +98,7 @@ class MotionConfig:
     body_kd_imu: float = 0.3
     body_dead_zone: float = 5.0
     body_speed_min: int = 40
-    body_speed_max: int = 100
+    body_speed_max: int = 50
     body_out_max: float = 100.0
 
     enable_distance_follow: bool = True
@@ -107,8 +107,8 @@ class MotionConfig:
     follow_hysteresis: float = 2.0
     follow_speed_kp: float = 2.2
     follow_speed_min: int = 45
-    follow_speed_max: int = 80
-    follow_back_speed_max: int = 60
+    follow_speed_max: int = 50
+    follow_back_speed_max: int = 50
     follow_servo_center_deg: float = 12.0
     follow_min_action_sec: float = 0.20
     follow_max_action_sec: float = 0.65
