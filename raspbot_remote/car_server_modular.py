@@ -139,6 +139,8 @@ class CarServer:
         alarm = str(env_packet.alarm or '').lower()
         if 'smoke' in alarm:
             return f'SMOKE {env_packet.smoke}'
+        if 'cliff' in alarm or 'track_empty' in alarm or 'suspend' in alarm:
+            return 'CLIFF'
         if 'cry' in alarm:
             return 'BABY CRY'
         return ''

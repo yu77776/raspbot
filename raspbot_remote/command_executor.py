@@ -28,6 +28,9 @@ class CommandExecutor:
         self.set_remote_cry_state = set_remote_cry_state
         self.note_app_audio_volume = note_app_audio_volume
         self.sync_oled_alarm = sync_oled_alarm
+        self.cliff_back_speed = int(max(0, min(255, int(os.getenv("RASPBOT_CLIFF_BACK_SPEED", "55")))))
+        self.cliff_back_sec = float(os.getenv("RASPBOT_CLIFF_BACK_SEC", "0.35"))
+        self._cliff_back_until = 0.0
 
     def execute(self, cmd: CommandPacket):
         if not isinstance(cmd, CommandPacket):
@@ -58,6 +61,22 @@ class CommandExecutor:
             self.audio.clear()
 
         dist = env_packet.dist_cm
+        now = time.monotonic()
+        cliff = _is_cliff_alarm(env_packet)
+        if cliff:
+            if self._cliff_back_until <= now:
+                self._cliff_back_until = now + self.cliff_back_sec
+                print(
+                    f"[SAFE] cliff detected track={getattr(env_packet, 'track', [])} "
+                    f"-> backward {self.cliff_back_sec:.2f}s"
+                )
+            else:
+                self._cliff_back_until = max(self._cliff_back_until, now + self.cliff_back_sec)
+        if cliff or now < self._cliff_back_until:
+            action = "backward"
+            speed = self.cliff_back_speed
+            cmd.left_speed = self.cliff_back_speed
+            cmd.right_speed = self.cliff_back_speed
         if action == "forward" and dist < 30:
             print(f"[SAFE] block forward at dist={dist:.1f}cm (<30cm)")
             action = "stop"
@@ -95,3 +114,16 @@ class CommandExecutor:
                 )
 
         self.sync_oled_alarm(env_packet)
+
+
+def _is_cliff_alarm(env_packet: EnvPacket) -> bool:
+    alarm = str(getattr(env_packet, "alarm", "") or "").lower()
+    if "cliff" in alarm or "track_empty" in alarm or "suspend" in alarm:
+        return True
+    track = getattr(env_packet, "track", None)
+    if not isinstance(track, list) or len(track) < 4:
+        return False
+    try:
+        return all(int(v) == 0 for v in track[:4])
+    except (TypeError, ValueError):
+        return False

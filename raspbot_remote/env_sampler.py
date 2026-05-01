@@ -57,6 +57,8 @@ class EnvSampler:
         alarms = []
         if env.get("smoke_alarm"):
             alarms.append("smoke")
+        if _is_cliff_track(track):
+            alarms.append("cliff")
         if crying and cry_score >= self.cry_alarm_score_min:
             alarms.append("cry")
         if remote_alarm:
@@ -104,3 +106,12 @@ class EnvSampler:
                 return
         self._last_applied_knob_volume = volume
         self.audio.set_volume(volume)
+
+
+def _is_cliff_track(track) -> bool:
+    if not isinstance(track, list) or len(track) < 4:
+        return False
+    try:
+        return all(int(v) == 0 for v in track[:4])
+    except (TypeError, ValueError):
+        return False
