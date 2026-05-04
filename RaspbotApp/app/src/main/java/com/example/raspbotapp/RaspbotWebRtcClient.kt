@@ -111,15 +111,13 @@ class RaspbotWebRtcClient(
                 if (!callbacks.isSignalingConnected()) return
                 val iceJson = JsonObject().apply {
                     addProperty("type", RaspbotProtocol.TYPE_WEBRTC_ICE)
+                    addAuthToken(this)
                     val candidateObj = JsonObject().apply {
                         addProperty("candidate", candidate.sdp)
                         addProperty("sdpMid", candidate.sdpMid)
                         addProperty("sdpMLineIndex", candidate.sdpMLineIndex)
                     }
                     add("candidate", candidateObj)
-                    addProperty("ice", candidate.sdp)
-                    addProperty("sdpMid", candidate.sdpMid)
-                    addProperty("sdpMLineIndex", candidate.sdpMLineIndex)
                 }
                 signalingSender(gson.toJson(iceJson))
             }
@@ -183,6 +181,7 @@ class RaspbotWebRtcClient(
                     override fun onSetSuccess() {
                         val offerJson = JsonObject().apply {
                             addProperty("type", RaspbotProtocol.TYPE_WEBRTC_OFFER)
+                            addAuthToken(this)
                             addProperty("sdp", desc.description)
                             addProperty("sdpType", desc.type.canonicalForm())
                         }
@@ -314,5 +313,12 @@ class RaspbotWebRtcClient(
         peerConnection?.dispose()
         peerConnection = null
         videoView.visibility = View.GONE
+    }
+
+    private fun addAuthToken(obj: JsonObject) {
+        val token = BuildConfig.RASPBOT_AUTH_TOKEN.trim()
+        if (token.isNotBlank()) {
+            obj.addProperty("auth_token", token)
+        }
     }
 }

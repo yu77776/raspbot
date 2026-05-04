@@ -536,6 +536,39 @@
                     android:textSize="13sp"
                     android:textStyle="bold" />
 
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btnSpinLeft"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_marginRight="4dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_chip_default"
+                        android:minWidth="0dp"
+                        android:text="左旋"
+                        android:textAllCaps="false"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
+
+                    <Button
+                        android:id="@+id/btnSpinRight"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_marginLeft="4dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_chip_default"
+                        android:minWidth="0dp"
+                        android:text="右旋"
+                        android:textAllCaps="false"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
                 <Button
                     android:id="@+id/btnAudioToggle"
                     android:layout_width="match_parent"
@@ -548,6 +581,39 @@
                     android:textColor="@color/text_primary"
                     android:textSize="13sp"
                     android:textStyle="bold" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btnAudioPrev"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_marginRight="4dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_chip_default"
+                        android:minWidth="0dp"
+                        android:text="上一首"
+                        android:textAllCaps="false"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
+
+                    <Button
+                        android:id="@+id/btnAudioNext"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_marginLeft="4dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_chip_default"
+                        android:minWidth="0dp"
+                        android:text="下一首"
+                        android:textAllCaps="false"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
+                </LinearLayout>
 
             </LinearLayout>
         </ScrollView>

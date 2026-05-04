@@ -19,7 +19,10 @@ from typing import Optional
 import numpy as np
 
 from . import settings as cfg
+from .logger_setup import setup_logger
 from .tuning import JsonTuner
+
+logger = setup_logger('raspbot.motion')
 
 
 class MotionState(Enum):
@@ -47,12 +50,10 @@ class MotionOutput:
 
 
 class PID:
-    def __init__(self, kp, ki, kd, i_max, out_max):
+    def __init__(self, kp, ki, kd):
         self.kp = kp
         self.ki = ki
         self.kd = kd
-        self.i_max = i_max
-        self.out_max = out_max
         self.integral = 0.0
         self.last_error = 0.0
 
@@ -63,11 +64,10 @@ class PID:
     def update(self, error, dt):
         if dt <= 0:
             return 0.0
-        self.integral = float(np.clip(self.integral + error * dt, -self.i_max, self.i_max))
+        self.integral += error * dt
         d = (error - self.last_error) / dt
         self.last_error = error
-        out = self.kp * error + self.ki * self.integral + self.kd * d
-        return float(np.clip(out, -self.out_max, self.out_max))
+        return self.kp * error + self.ki * self.integral + self.kd * d
 
 
 @dataclass
@@ -83,10 +83,6 @@ class MotionConfig:
     servo_kp_y: float = cfg.SERVO_KP_Y
     servo_ki_y: float = 0.0
     servo_kd_y: float = cfg.SERVO_KD_Y
-    servo_i_max: float = cfg.SERVO_I_MAX
-    servo_out_max_x: float = cfg.SERVO_OUT_MAX_X
-    servo_out_max_y: float = cfg.SERVO_OUT_MAX_Y
-    servo_dead_zone: float = 0.3
     servo_dir_x: int = cfg.SERVO_DIR_X
     servo_dir_y: int = cfg.SERVO_DIR_Y
 
@@ -98,7 +94,7 @@ class MotionConfig:
     body_kd_imu: float = 0.3
     body_dead_zone: float = 5.0
     body_speed_min: int = 40
-    body_speed_max: int = 50
+    body_speed_max: int = 100
     body_out_max: float = 100.0
 
     enable_distance_follow: bool = True
@@ -107,8 +103,8 @@ class MotionConfig:
     follow_hysteresis: float = 2.0
     follow_speed_kp: float = 2.2
     follow_speed_min: int = 45
-    follow_speed_max: int = 50
-    follow_back_speed_max: int = 50
+    follow_speed_max: int = 80
+    follow_back_speed_max: int = 60
     follow_servo_center_deg: float = 12.0
     follow_min_action_sec: float = 0.20
     follow_max_action_sec: float = 0.65
@@ -117,8 +113,8 @@ class MotionConfig:
     obstacle_cm: float = 30.0
 
     scan_speed_deg_s: float = 15.0
-    scan_range_min: float = 30.0
-    scan_range_max: float = 150.0
+    scan_range_min: float = 5.0
+    scan_range_max: float = 175.0
     scan_timeout: float = 10.0
 
     debug: bool = False
@@ -156,15 +152,11 @@ class MotionController:
             self.cfg.servo_kp_x,
             self.cfg.servo_ki_x,
             self.cfg.servo_kd_x,
-            self.cfg.servo_i_max,
-            self.cfg.servo_out_max_x,
         )
         self.pid_y = PID(
             self.cfg.servo_kp_y,
             self.cfg.servo_ki_y,
             self.cfg.servo_kd_y,
-            self.cfg.servo_i_max,
-            self.cfg.servo_out_max_y,
         )
 
         self.servo_x = 90.0
@@ -238,20 +230,16 @@ class MotionController:
         self._apply_pid_config()
         if any(name.startswith("follow_") or name == "enable_distance_follow" for name in changed):
             self._reset_follow()
-        print(f"[TUNING] reloaded {os.path.basename(self.tuner.path)}: {', '.join(changed)}")
+        logger.info('reloaded %s: %s', os.path.basename(self.tuner.path), ', '.join(changed))
 
     def _apply_pid_config(self):
         self.pid_x.kp = self.cfg.servo_kp_x
         self.pid_x.ki = self.cfg.servo_ki_x
         self.pid_x.kd = self.cfg.servo_kd_x
-        self.pid_x.i_max = self.cfg.servo_i_max
-        self.pid_x.out_max = self.cfg.servo_out_max_x
 
         self.pid_y.kp = self.cfg.servo_kp_y
         self.pid_y.ki = self.cfg.servo_ki_y
         self.pid_y.kd = self.cfg.servo_kd_y
-        self.pid_y.i_max = self.cfg.servo_i_max
-        self.pid_y.out_max = self.cfg.servo_out_max_y
 
     def tuning_overlay(self) -> str:
         if not self.tuner:
@@ -259,9 +247,12 @@ class MotionController:
         names = (
             "enable_motor_control",
             "servo_kp_x",
+            "servo_ki_x",
             "servo_kd_x",
             "body_kp",
             "body_kd_imu",
+            "body_dead_zone",
+            "body_speed_min",
             "body_speed_max",
             "follow_dist_near",
             "follow_dist_far",
@@ -280,53 +271,27 @@ class MotionController:
             self._enter_scan()
             return self._do_scan(dt)
 
-        c = self.cfg
         cx, cy = _box_center(track_result.box)
-        err_x = c.servo_dir_x * (cx - c.center_x)
-        err_y = c.servo_dir_y * (cy - c.center_y)
 
         if re_locked:
             self.pid_x.reset()
             self.pid_y.reset()
             self._prev_yaw = imu_yaw
 
-        dx = self.pid_x.update(err_x, dt)
-        if abs(dx) >= c.servo_dead_zone:
-            self.servo_x = float(np.clip(self.servo_x + dx, 0.0, 180.0))
+        self._update_tracking_servos(cx, cy, dt)
 
-        if c.enable_servo_y:
-            dy = self.pid_y.update(err_y, dt)
-            if abs(dy) >= c.servo_dead_zone:
-                self.servo_y = float(np.clip(self.servo_y + dy, 0.0, 180.0))
-
-        if not c.enable_motor_control:
+        if not self.cfg.enable_motor_control:
             self._reset_follow()
             return MotionOutput(servo_x=self.servo_x, servo_y=self.servo_y, state=MotionState.TRACK)
 
-        # Convert servo offset back to physical body-turn direction.
-        servo_dev = (self.servo_x - 90.0) * c.servo_dir_x
-        if abs(servo_dev) < c.body_dead_zone:
-            motor_out = 0.0
-        else:
-            effective_dev = servo_dev - math.copysign(c.body_dead_zone, servo_dev)
-            motor_out = c.body_kp * effective_dev
-            if imu_yaw is not None and self._prev_yaw is not None and dt > 0:
-                yaw_delta = imu_yaw - self._prev_yaw
-                if yaw_delta > 180:
-                    yaw_delta -= 360
-                elif yaw_delta < -180:
-                    yaw_delta += 360
-                yaw_rate = yaw_delta / dt
-                motor_out -= c.body_kd_imu * yaw_rate
-            motor_out = float(np.clip(motor_out, -c.body_out_max, c.body_out_max))
-
-        obstacle = dist_cm < c.obstacle_cm
+        motor_out = self._body_motor_out(imu_yaw, dt)
+        obstacle = dist_cm < self.cfg.obstacle_cm
         need_spin = abs(motor_out) >= 2.0 and not obstacle
-        servo_centered = abs(servo_dev) < c.follow_servo_center_deg
+        servo_centered = abs(self._servo_body_dev()) < self.cfg.follow_servo_center_deg
 
         follow_action = None
         follow_speed = 0
-        if c.enable_distance_follow and servo_centered and not need_spin and dist_cm < 900:
+        if self.cfg.enable_distance_follow and servo_centered and not need_spin and dist_cm < 900:
             follow_action, follow_speed = self._distance_follow_action(dist_cm, obstacle)
         else:
             self._reset_follow()
@@ -334,14 +299,12 @@ class MotionController:
         if follow_action:
             action = follow_action
             speed = follow_speed
-            left_speed = right_speed = speed
         elif need_spin:
-            speed = int(np.clip(abs(motor_out), c.body_speed_min, c.body_speed_max))
+            speed = int(np.clip(abs(motor_out), self.cfg.body_speed_min, self.cfg.body_speed_max))
             action = "spin_right" if motor_out > 0 else "spin_left"
-            left_speed = right_speed = speed
         else:
             action, speed = "stop", 0
-            left_speed = right_speed = 0
+        left_speed = right_speed = speed
 
         return MotionOutput(
             servo_x=self.servo_x,
@@ -352,6 +315,41 @@ class MotionController:
             right_speed=right_speed,
             state=MotionState.TRACK,
         )
+
+    def _update_tracking_servos(self, cx, cy, dt):
+        c = self.cfg
+        err_x = c.servo_dir_x * (cx - c.center_x)
+        err_y = c.servo_dir_y * (cy - c.center_y)
+
+        dx = self.pid_x.update(err_x, dt)
+        self.servo_x = float(np.clip(self.servo_x + dx, 0.0, 180.0))
+
+        if c.enable_servo_y:
+            dy = self.pid_y.update(err_y, dt)
+            self.servo_y = float(np.clip(self.servo_y + dy, 0.0, 180.0))
+
+    def _servo_body_dev(self):
+        # Body alignment uses the pan-servo offset as the heading error.
+        # The servo itself remains controlled only by the visual target loop.
+        return (self.servo_x - 90.0) * self.cfg.servo_dir_x
+
+    def _body_motor_out(self, imu_yaw, dt):
+        c = self.cfg
+        servo_dev = self._servo_body_dev()
+        if abs(servo_dev) < c.body_dead_zone:
+            return 0.0
+
+        effective_dev = servo_dev - math.copysign(c.body_dead_zone, servo_dev)
+        motor_out = c.body_kp * effective_dev
+        if imu_yaw is not None and self._prev_yaw is not None and dt > 0:
+            yaw_delta = imu_yaw - self._prev_yaw
+            if yaw_delta > 180:
+                yaw_delta -= 360
+            elif yaw_delta < -180:
+                yaw_delta += 360
+            yaw_rate = yaw_delta / dt
+            motor_out -= c.body_kd_imu * yaw_rate
+        return float(np.clip(motor_out, -c.body_out_max, c.body_out_max))
 
     def _do_scan(self, dt):
         c = self.cfg
@@ -440,8 +438,7 @@ class MotionController:
         self._last_debug_t = now
         dev = self.servo_x - 90.0
         yaw = f"{imu_yaw:.1f}" if imu_yaw is not None else "-"
-        print(
-            f"[MOTION] {out.state.name} "
-            f"servo=({out.servo_x:.1f},{out.servo_y:.1f}) dev={dev:+.1f} "
-            f"act={out.action} spd={out.speed} yaw={yaw}"
+        logger.debug(
+            '%s servo=(%.1f,%.1f) dev=%+.1f act=%s spd=%s yaw=%s',
+            out.state.name, out.servo_x, out.servo_y, dev, out.action, out.speed, yaw,
         )

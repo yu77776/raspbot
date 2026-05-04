@@ -9,7 +9,10 @@ import time
 
 import websockets
 
+from logger_setup import setup_logger
 from modules.base import ModuleBase
+
+logger = setup_logger('raspbot.mic')
 
 
 class MicStream(ModuleBase):
@@ -44,7 +47,7 @@ class MicStream(ModuleBase):
         self.connected = False
         self._capture_proc = None
 
-        print(f'[MIC] init asr_url={self.asr_url} device={self.mic_device}')
+        logger.info('init asr_url=%s device=%s', self.asr_url, self.mic_device)
 
     def _detect_capture_devices(self):
         usb_cards = []
@@ -131,7 +134,7 @@ class MicStream(ModuleBase):
 
     async def _stream_once(self):
         proc, device = self._open_capture()
-        print(f'[MIC] capture ready device={device}')
+        logger.info('capture ready device=%s', device)
 
         try:
             async with websockets.connect(
@@ -141,7 +144,7 @@ class MicStream(ModuleBase):
                 ping_timeout=10,
                 max_size=None,
             ) as ws:
-                print(f'[MIC] connected {self.asr_url}')
+                logger.info('connected %s', self.asr_url)
                 with self.lock:
                     self.connected = True
 
@@ -166,18 +169,18 @@ class MicStream(ModuleBase):
             except Exception as e:
                 if self.stop_event.is_set():
                     break
-                print(f'[MIC] disconnected: {e}')
-                print(f'[MIC] reconnect in {backoff:.1f}s')
+                logger.warning('disconnected: %s', e)
+                logger.info('reconnect in %.1fs', backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(self.max_backoff, backoff * 2)
 
-        print('[MIC] stream loop stopped')
+        logger.info('stream loop stopped')
 
     def _run(self):
         try:
             asyncio.run(self._run_async())
         except Exception as e:
-            print(f'[MIC] fatal loop error: {e}')
+            logger.error('fatal loop error: %s', e)
 
     def _before_stop(self):
         self._stop_capture()

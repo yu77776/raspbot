@@ -15,9 +15,19 @@ from typing import Callable, Optional
 import cv2
 import websockets
 
+from .logger_setup import setup_logger
 from . import settings as cfg
 from .app_gateway import AppGateway, GatewayConfig
-from .protocol import TYPE_WEBRTC_ICE, TYPE_WEBRTC_OFFER, TYPE_WEBRTC_ANSWER
+from .protocol import (
+    TYPE_WEBRTC_ICE,
+    TYPE_WEBRTC_OFFER,
+    TYPE_WEBRTC_ANSWER,
+    payload_has_auth,
+    strip_auth_fields,
+)
+from .voice_cry_bridge import merge_env_cry
+
+logger = setup_logger('raspbot.webrtc')
 
 try:
     from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
@@ -48,6 +58,7 @@ class WebRtcBridgeConfig:
     env_interval: float = 0.2
     video_fps: int = 20
     cry_state: object = None
+    auth_token: str = ""
 
 
 class LatestFrameVideoTrack(MediaStreamTrack):
@@ -114,6 +125,7 @@ class WebRtcBridge:
                 car_port=cfg_.car_port,
                 reconnect_delay=cfg_.reconnect_delay,
                 cry_state=cfg_.cry_state,
+                auth_token=cfg_.auth_token,
             )
         )
         self._pc: Optional[RTCPeerConnection] = None
@@ -132,7 +144,7 @@ class WebRtcBridge:
                 except asyncio.CancelledError:
                     break
                 except Exception as exc:
-                    print(f"[WEBRTC] disconnected: {exc}")
+                    logger.warning('disconnected: %s', exc)
                 await self._close_peer()
                 if not self._stop_event.is_set():
                     await asyncio.sleep(self.cfg.reconnect_delay)
@@ -142,7 +154,7 @@ class WebRtcBridge:
             await asyncio.gather(car_task, return_exceptions=True)
 
     async def _signaling_session(self):
-        print(f"[WEBRTC] signaling connect {self.cfg.signaling_url}")
+        logger.info('signaling connect %s', self.cfg.signaling_url)
         async with websockets.connect(
             self.cfg.signaling_url,
             max_size=10 * 1024 * 1024,
@@ -152,7 +164,7 @@ class WebRtcBridge:
             ping_timeout=10,
             close_timeout=2,
         ) as ws:
-            print("[WEBRTC] signaling connected")
+            logger.info('signaling connected')
             await self._create_peer(ws)
             while self._stop_event is None or not self._stop_event.is_set():
                 try:
@@ -174,13 +186,14 @@ class WebRtcBridge:
                     credential=self.cfg.turn_credential,
                 )
             )
-        self._pc = RTCPeerConnection(RTCConfiguration(iceServers=ice_servers))
-        self._pc.addTrack(LatestFrameVideoTrack(self._frame_provider))
-        self._env_channel = self._pc.createDataChannel("env")
-        self._command_channel = self._pc.createDataChannel("command")
+        pc = RTCPeerConnection(RTCConfiguration(iceServers=ice_servers))
+        self._pc = pc
+        pc.addTrack(LatestFrameVideoTrack(self._frame_provider))
+        self._env_channel = pc.createDataChannel("env")
+        self._command_channel = pc.createDataChannel("command")
         self._command_channel.on("message", lambda message: asyncio.create_task(self._handle_command_message(message)))
 
-        @self._pc.on("datachannel")
+        @pc.on("datachannel")
         def on_datachannel(channel):
             if channel.label == "env":
                 self._env_channel = channel
@@ -188,19 +201,21 @@ class WebRtcBridge:
                 self._command_channel = channel
                 channel.on("message", lambda message: asyncio.create_task(self._handle_command_message(message)))
 
-        @self._pc.on("icecandidate")
+        @pc.on("icecandidate")
         async def on_icecandidate(candidate):
             if candidate is None:
                 return
             await ws.send(json.dumps({"type": TYPE_WEBRTC_ICE, "candidate": _candidate_to_json(candidate)}))
 
-        @self._pc.on("connectionstatechange")
+        @pc.on("connectionstatechange")
         async def on_connectionstatechange():
-            print(f"[WEBRTC] peer connection {self._pc.connectionState}")
+            if self._pc is pc:
+                logger.info('peer connection %s', pc.connectionState)
 
-        @self._pc.on("iceconnectionstatechange")
+        @pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange():
-            print(f"[WEBRTC] peer ice {self._pc.iceConnectionState}")
+            if self._pc is pc:
+                logger.info('peer ice %s', pc.iceConnectionState)
 
         asyncio.create_task(self._env_loop())
 
@@ -213,8 +228,14 @@ class WebRtcBridge:
             return
         msg_type = str(payload.get("type", "") or "").lower()
         if msg_type == TYPE_WEBRTC_OFFER:
+            if not payload_has_auth(payload, self.cfg.auth_token):
+                logger.warning('drop unauthorized WebRTC offer')
+                return
             await self._accept_offer(ws, payload)
         elif msg_type == TYPE_WEBRTC_ICE:
+            if not payload_has_auth(payload, self.cfg.auth_token):
+                logger.warning('drop unauthorized WebRTC ice')
+                return
             await self._add_ice(payload)
         elif msg_type in {"ping", "join", "joined"}:
             return
@@ -242,7 +263,7 @@ class WebRtcBridge:
                 }
             )
         )
-        print("[WEBRTC] answered app offer")
+        logger.info('answered app offer')
 
     async def _add_ice(self, payload: dict):
         candidate = _candidate_from_payload(payload)
@@ -255,44 +276,63 @@ class WebRtcBridge:
         await pc.addIceCandidate(candidate)
 
     async def _handle_command_message(self, message):
-        if isinstance(message, bytes):
-            payload = message
-        else:
-            text = str(message)
-            command = self._gateway._build_voice_command_from_app_text(text)
-            if command is not None:
-                await self._gateway._send_to_car(command)
-                return
-            payload = bytes([cfg.MSG_COMMAND]) + text.encode("utf-8")
+        payload = self._command_payload_from_message(message)
+        if payload is None:
+            return
         await self._gateway._send_to_car(payload)
 
+    def _command_payload_from_message(self, message):
+        if isinstance(message, bytes):
+            if len(message) < 2 or message[0] != cfg.MSG_COMMAND:
+                return None
+            try:
+                payload = json.loads(message[1:].decode("utf-8"))
+            except Exception:
+                return None if self.cfg.auth_token else message
+            if not payload_has_auth(payload, self.cfg.auth_token):
+                logger.warning('drop unauthorized WebRTC command')
+                return None
+            return bytes([cfg.MSG_COMMAND]) + json.dumps(strip_auth_fields(payload), ensure_ascii=False).encode("utf-8")
+
+        text = str(message)
+        try:
+            payload = json.loads(text)
+        except Exception:
+            if self.cfg.auth_token:
+                logger.warning('drop non-json WebRTC command while auth is required')
+                return None
+            return bytes([cfg.MSG_COMMAND]) + text.encode("utf-8")
+        if not isinstance(payload, dict):
+            return None
+        if not payload_has_auth(payload, self.cfg.auth_token):
+            logger.warning('drop unauthorized WebRTC command')
+            return None
+
+        voice_cmd = self._gateway._build_voice_command_from_obj(payload)
+        if voice_cmd is not None:
+            return voice_cmd
+        return bytes([cfg.MSG_COMMAND]) + json.dumps(strip_auth_fields(payload), ensure_ascii=False).encode("utf-8")
+
     async def _env_loop(self):
+        last_sent = ""
         while self._pc is not None:
             channel = self._env_channel
             if channel is not None and channel.readyState == "open":
                 payload = self._env_provider() or {}
                 payload = self._merge_env_cry(payload)
-                try:
-                    channel.send(json.dumps(payload, ensure_ascii=False))
-                except Exception:
-                    pass
+                text = json.dumps(payload, ensure_ascii=False)
+                if text != last_sent:
+                    try:
+                        channel.send(text)
+                        last_sent = text
+                    except Exception:
+                        pass
             await asyncio.sleep(max(0.05, float(self.cfg.env_interval)))
 
     def _merge_env_cry(self, payload: dict) -> dict:
-        cry_state = self.cfg.cry_state
-        if cry_state is None or not isinstance(payload, dict):
+        if self.cfg.cry_state is None or not isinstance(payload, dict):
             return payload
-        merged = dict(payload)
-        cry = cry_state.snapshot()
-        merged["crying"] = bool(cry.crying)
-        merged["cry_score"] = int(cry.cry_score)
-        base_alarm = str(merged.get("alarm", "") or "").strip()
-        if cry.alarm:
-            if not base_alarm:
-                merged["alarm"] = cry.alarm
-            elif cry.alarm not in base_alarm:
-                merged["alarm"] = f"{base_alarm}; {cry.alarm}"
-        return merged
+        return merge_env_cry(payload, self.cfg.cry_state)
 
     async def _close_peer(self):
         pc = self._pc
@@ -332,47 +372,13 @@ def _candidate_from_payload(payload: dict):
     return candidate
 
 
-class WebRtcBridgeRunner:
-    def __init__(self, cfg_: WebRtcBridgeConfig, frame_provider: Callable[[], tuple], env_provider: Callable[[], dict]):
-        self.cfg = cfg_
-        self._frame_provider = frame_provider
-        self._env_provider = env_provider
-        self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._error: Optional[Exception] = None
-
-    def _run(self):
-        try:
-            bridge = WebRtcBridge(self.cfg, self._frame_provider, self._env_provider)
-            asyncio.run(bridge.run(stop_event=self._stop_event))
-        except Exception as exc:
-            self._error = exc
-            print(f"[WEBRTC] bridge thread error: {exc}")
-
-    def start(self):
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop_event.clear()
-        self._error = None
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def stop(self, timeout: float = 3.0):
-        self._stop_event.set()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=timeout)
-
-    @property
-    def error(self) -> Optional[Exception]:
-        return self._error
-
-
 def parse_args():
     p = argparse.ArgumentParser(description="Raspbot cloud WebRTC bridge")
     p.add_argument("--signaling-url", default=os.getenv("RASPBOT_WEBRTC_SIGNALING_URL", "ws://47.108.164.190:8765/pc_room"))
     p.add_argument("--car-host", default=os.getenv("RASPBOT_CAR_IP", os.getenv("CAR_HOST", cfg.DEFAULT_CAR_HOST)))
     p.add_argument("--car-port", type=int, default=int(os.getenv("RASPBOT_CAR_PORT", str(cfg.DEFAULT_CAR_PORT))))
     p.add_argument("--turn-credential", default=os.getenv("RASPBOT_TURN_CREDENTIAL", ""))
+    p.add_argument("--auth-token", default=os.getenv("RASPBOT_AUTH_TOKEN", ""))
     return p.parse_args()
 
 

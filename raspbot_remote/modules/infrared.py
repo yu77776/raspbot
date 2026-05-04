@@ -3,7 +3,10 @@
 import threading
 import time
 
+from logger_setup import setup_logger
 from modules.base import ModuleBase
+
+logger = setup_logger('raspbot.infrared')
 
 try:
     import RPi.GPIO as GPIO
@@ -32,9 +35,9 @@ class Infrared(ModuleBase):
                 for pin in self.track_pins:
                     GPIO.setup(pin, GPIO.IN)
                 self.enabled = True
-                print('[TRACK] init ok')
+                logger.info('init ok')
             except Exception as e:
-                print(f'[TRACK] init fail: {e}')
+                logger.warning('init fail: %s', e)
 
     def _run(self):
         while not self.stop_event.is_set():
@@ -46,7 +49,7 @@ class Infrared(ModuleBase):
                 with self.lock:
                     self.data = {'track': track}
             except Exception as e:
-                print(f'[TRACK] read error: {e}')
+                logger.warning('read error: %s', e)
             time.sleep(0.05)
 
     def _can_start(self) -> bool:

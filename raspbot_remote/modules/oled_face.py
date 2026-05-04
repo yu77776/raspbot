@@ -7,12 +7,13 @@ Render priority: alarm > event > face_state.
 """
 
 import math
-import logging
 import random
 import threading
 import time
 
-logger = logging.getLogger(__name__)
+from logger_setup import setup_logger
+
+logger = setup_logger('raspbot.oled')
 
 try:
     from luma.core.interface.serial import i2c as luma_i2c
@@ -62,13 +63,15 @@ class FaceEngine:
 
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
+        self._running = False
+        self._thread = None
         self._last_draw_error_log_ts = 0.0
         now = time.monotonic()
         self._blink_close_until = 0.0
         self._next_blink_at = now + random.uniform(4.5, 5.5)
 
         if not HAS_OLED:
-            print("[OLED] unavailable")
+            logger.warning("unavailable")
             return
 
         try:
@@ -101,7 +104,7 @@ class FaceEngine:
                 18,
             )
 
-            print(f"[OLED] OK cn={self.font_cn_name} en={self.font_en_name}")
+            logger.info("OK cn=%s en=%s", self.font_cn_name, self.font_en_name)
         except Exception as exc:
             logger.error("[OLED] FAIL: %s", exc)
             self.device = None
@@ -346,21 +349,7 @@ class FaceEngine:
         self._display(image)
 
     def _draw_event_alert(self, ev):
-        show_text = int(ev.elapsed / 0.3) % 2 == 0
-
-        image = self._new_frame()
-        draw = ImageDraw.Draw(image)
-        msg = self._fit_text(draw, str(ev.value or "ALERT"), font=self.font_cn)
-
-        if show_text:
-            self._draw_text_center(draw, 2, "!! WARNING !!", self.font_en)
-            self._draw_text_center(draw, 18, msg, self.font_cn)
-        else:
-            draw.rectangle([0, 0, 127, 31], fill=1)
-            self._draw_text_center_inv(draw, 2, "!! WARNING !!", self.font_en)
-            self._draw_text_center_inv(draw, 18, msg, self.font_cn)
-
-        self._display(image)
+        self._draw_alarm_flash(str(ev.value or "ALERT"), ev.elapsed)
 
     def _draw_event_listening(self, ev):
         image = self._new_frame()
@@ -381,8 +370,8 @@ class FaceEngine:
 
         self._display(image)
 
-    def _draw_alarm_flash(self, msg, tick):
-        show_text = int(tick / 0.3) % 2 == 0
+    def _draw_alarm_flash(self, msg, elapsed):
+        show_text = int(elapsed / 0.3) % 2 == 0
 
         image = self._new_frame()
         draw = ImageDraw.Draw(image)
@@ -444,14 +433,20 @@ class FaceEngine:
 
             time.sleep(0.05)
             tick += 0.05
+        self._running = False
 
     def start(self):
         if not self.device:
             return
+        if self._running:
+            return
         self.stop_event.clear()
-        thread = threading.Thread(target=self._run, daemon=True)
-        thread.start()
+        self._running = True
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
 
     def stop(self):
         self.stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
         self._clear_display()

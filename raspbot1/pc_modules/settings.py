@@ -42,6 +42,7 @@ SERVO_Y_HOLD_ANGLE = 90.0
 
 RECONNECT_DELAY = 2.0
 MAX_RECONNECTS = 10
+COMMAND_KEEPALIVE_SEC = float(os.getenv('RASPBOT_COMMAND_KEEPALIVE_SEC', '0.3'))
 
 DEFAULT_CAR_HOST = '10.188.152.100'
 DEFAULT_CAR_PORT = 5001
@@ -49,3 +50,4 @@ DEFAULT_CAR_PORT = 5001
 # Voice control extension:
 # "default" lets the car choose the first playable file in its songs directory.
 VOICE_DEFAULT_SONG_FILE = os.getenv('RASPBOT_VOICE_SONG_FILE', 'default')
+VOICE_DEFAULT_AUDIO_VOLUME = int(os.getenv('RASPBOT_VOICE_AUDIO_VOLUME', '60'))

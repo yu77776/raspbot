@@ -4,12 +4,86 @@ Keep these fields aligned with docs/protocol.md and pc_modules/packets.py.
 """
 
 from dataclasses import dataclass
+import hmac
+import os
 from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qsl, urlsplit
 
 
 MSG_VIDEO = 0x01
 MSG_COMMAND = 0x02
 MSG_ENV = 0x03
+
+AUTH_QUERY_KEY = "token"
+AUTH_FIELD = "auth_token"
+
+# Shared playlist navigation sentinels — keep in sync with pc_modules/protocol.py.
+PLAY_SONG_NEXT = "__next__"
+PLAY_SONG_PREV = "__prev__"
+PLAY_SONG_RANDOM = "__random__"
+
+
+def resolve_auth_token(value: Optional[str] = None) -> str:
+    return str(value if value is not None else os.getenv("RASPBOT_AUTH_TOKEN", "")).strip()
+
+
+def _is_loopback_host(host: Any) -> bool:
+    value = str(host or "").strip().lower()
+    return value in {"localhost", "127.0.0.1", "::1"}
+
+
+def validate_auth_config(
+    host: Any,
+    auth_token: Optional[str],
+    *,
+    component: str = "server",
+    allow_insecure: Optional[bool] = None,
+) -> None:
+    token = resolve_auth_token(auth_token)
+    if token:
+        return
+    if allow_insecure is None:
+        allow_insecure = as_bool(os.getenv("RASPBOT_ALLOW_INSECURE", "0"))
+    if allow_insecure or _is_loopback_host(host):
+        return
+    raise RuntimeError(
+        f"{component} refuses to bind {host!r} without RASPBOT_AUTH_TOKEN "
+        "set RASPBOT_ALLOW_INSECURE=1 only for isolated lab networks"
+    )
+
+
+def safe_ws_path(ws) -> str:
+    path = getattr(ws, "path", None)
+    if path:
+        return str(path)
+    req = getattr(ws, "request", None)
+    if req is not None:
+        return str(getattr(req, "path", "") or "")
+    return ""
+
+
+def auth_token_from_ws(ws) -> str:
+    path = safe_ws_path(ws)
+    query = urlsplit(path).query
+    params = dict(parse_qsl(query, keep_blank_values=True))
+    return str(params.get(AUTH_QUERY_KEY, "") or "").strip()
+
+
+def is_ws_authorized(ws, expected_token: Optional[str]) -> bool:
+    token = resolve_auth_token(expected_token)
+    if not token:
+        return True
+    return hmac.compare_digest(auth_token_from_ws(ws), token)
+
+
+def is_cliff_track(track) -> bool:
+    """Return True if all four track sensors report cliff (value == 0)."""
+    if not isinstance(track, list) or len(track) < 4:
+        return False
+    try:
+        return all(int(v) == 0 for v in track[:4])
+    except (TypeError, ValueError):
+        return False
 
 
 def clamp_int(value: Any, min_v: int, max_v: int, default: int) -> int:

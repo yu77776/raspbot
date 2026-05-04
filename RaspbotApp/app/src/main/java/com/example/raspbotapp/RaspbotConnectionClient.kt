@@ -9,6 +9,7 @@ import okhttp3.WebSocketListener
 import okio.ByteString
 import okio.ByteString.Companion.toByteString
 import java.net.Proxy
+import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 
@@ -40,6 +41,7 @@ class RaspbotConnectionClient(
 
     private var webSocket: WebSocket? = null
     private var reconnectRunnable: Runnable? = null
+    @Volatile
     private var connected = false
     var usingCloudSignaling = true
         private set
@@ -140,8 +142,19 @@ class RaspbotConnectionClient(
 fun buildConnectionUrl(input: String): String {
     val value = input.trim()
     if (isCloudConnectionTarget(value)) return RaspbotProtocol.DEFAULT_SIGNALING_URL
-    if (value.startsWith("ws://") || value.startsWith("wss://")) return value
-    return "ws://$value:${RaspbotProtocol.LOCAL_WS_PORT}"
+    val url = if (value.startsWith("ws://") || value.startsWith("wss://")) {
+        value
+    } else {
+        "ws://$value:${RaspbotProtocol.LOCAL_WS_PORT}"
+    }
+    return appendAuthToken(url)
+}
+
+private fun appendAuthToken(url: String): String {
+    val token = BuildConfig.RASPBOT_AUTH_TOKEN.trim()
+    if (token.isBlank()) return url
+    val separator = if (url.contains("?")) "&" else "?"
+    return "$url${separator}token=${URLEncoder.encode(token, "UTF-8")}"
 }
 
 fun isCloudSignalingUrl(url: String): Boolean {
@@ -164,7 +177,7 @@ fun isCloudConnectionTarget(input: String): Boolean {
             || value.equals("cloud", ignoreCase = true)
             || value.equals("default", ignoreCase = true)
             || value == RaspbotProtocol.DEFAULT_SIGNALING_URL
-            || value == "47.108.164.190"
-            || value == "47.108.164.190:8765"
-            || value == "47.108.164.190/pc_room"
+            || value == RaspbotProtocol.CLOUD_HOST
+            || value == "${RaspbotProtocol.CLOUD_HOST}:${RaspbotProtocol.CLOUD_PORT}"
+            || value == "${RaspbotProtocol.CLOUD_HOST}/pc_room"
 }

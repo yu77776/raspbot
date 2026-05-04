@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-import sys, os, asyncio, json, argparse, threading, time, logging, signal
+import sys, os, asyncio, json, argparse, threading, time, signal
 from typing import Optional, Tuple
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+from logger_setup import setup_logger
 from protocol import (
     MSG_COMMAND,
     MSG_ENV,
@@ -10,13 +11,16 @@ from protocol import (
     CommandPacket,
     EnvPacket,
     as_bool,
+    is_ws_authorized,
+    resolve_auth_token,
+    validate_auth_config,
 )
 from command_executor import CommandExecutor
 from env_sampler import EnvSampler
 from modules.ultrasonic import Ultrasonic
 from modules.pcf8591 import PCF8591
 from modules.infrared import Infrared
-from modules.camera import Camera
+from modules.camera import Camera, CameraRestartStatus
 from modules.motor import Motor
 from modules.audio import Audio
 from modules.oled_face import FaceEngine
@@ -24,12 +28,12 @@ from modules.mic_stream import MicStream
 from modules.mpu6050 import MPU6050
 import websockets
 
-logging.getLogger('websockets.server').setLevel(logging.CRITICAL)
-logging.getLogger('websockets.asyncio.server').setLevel(logging.CRITICAL)
+logger = setup_logger('raspbot.car')
 
 
 class CarServer:
-    def __init__(self, asr_url=None, mic_health_timeout=2.0):
+    def __init__(self, asr_url=None, mic_health_timeout=2.0, auth_token=None):
+        self.auth_token = resolve_auth_token(auth_token)
         self.ultrasonic = Ultrasonic()
         self.pcf8591 = PCF8591()
         self.infrared = Infrared()
@@ -48,6 +52,7 @@ class CarServer:
         mic_init_url = 'ws://127.0.0.1:6006/audio' if self.mic_auto_mode else resolved_asr
         self.mic_stream = MicStream(asr_url=mic_init_url)
         self.mic_health_timeout = float(mic_health_timeout)
+        self.mic_startup_grace_sec = float(os.getenv('MIC_STARTUP_GRACE_SEC', '6.0'))
         self.mic_enabled = resolved_asr.lower() not in {'', 'off', 'none', 'disabled'}
         self.cry_alarm_score_min = int(max(0, min(100, int(os.getenv('CRY_ALARM_SCORE_MIN', '60')))))
         self.stop_event = threading.Event()
@@ -55,16 +60,24 @@ class CarServer:
         self.mic_watchdog_thread = None
         self.command_watchdog_thread = None
         self.mic_fail_safe_active = False
+        self._mic_watchdog_started_at = 0.0
         self.manual_override_until = 0.0
         self.manual_override_sec = float(os.getenv('RASPBOT_MANUAL_OVERRIDE_SEC', '1.2'))
         self.command_timeout_sec = float(os.getenv('RASPBOT_COMMAND_TIMEOUT_SEC', '0.8'))
+        self.home_servos_on_safe_stop = as_bool(os.getenv('RASPBOT_HOME_SERVOS_ON_SAFE_STOP', '1'))
         self._command_lock = threading.Lock()
         self._last_command_time = 0.0
         self._last_motion_command_active = False
+        self._control_lock = threading.Lock()
+        self._control_owner = None
+        self._control_owner_until = 0.0
+        self.control_lease_sec = float(os.getenv('RASPBOT_CONTROL_LEASE_SEC', '1.2'))
         self.home_servos_on_startup = as_bool(os.getenv('RASPBOT_HOME_SERVOS_ON_STARTUP', '0'))
         self.env_update_interval = float(os.getenv('RASPBOT_ENV_INTERVAL_SEC', '0.5'))
         self.env_debug_interval = float(os.getenv('RASPBOT_ENV_DEBUG_INTERVAL_SEC', '0'))
         self._last_env_debug_log_ts = 0.0
+        self._process_restart_callback = None
+        self._process_restart_lock = threading.Lock()
         self._env_lock = threading.Lock()
         self._remote_cry_lock = threading.Lock()
         self._remote_crying: Optional[bool] = None
@@ -110,6 +123,13 @@ class CarServer:
             sync_oled_alarm=self._sync_oled_alarm,
         )
 
+    def _safe_stop_motion(self, reason: str, *, home_servos: Optional[bool] = None) -> None:
+        self.motor.stop()
+        should_home = self.home_servos_on_safe_stop if home_servos is None else bool(home_servos)
+        if should_home:
+            self.motor.center_servos(90, 90, force=True)
+        logger.info('safe stop motion reason=%s home_servos=%s', reason, should_home)
+
     def _set_remote_cry_state(self, cmd: CommandPacket):
         if cmd.remote_crying is None and cmd.remote_cry_score is None and cmd.remote_alarm is None:
             return
@@ -148,13 +168,25 @@ class CarServer:
     def _sync_oled_alarm(self, env_packet: EnvPacket) -> None:
         self.oled.set_alarm(self._oled_alarm_text(env_packet))
 
+    def set_process_restart_callback(self, callback) -> None:
+        self._process_restart_callback = callback
+
+    def _request_process_restart(self, reason: str) -> None:
+        callback = self._process_restart_callback
+        if callback is None:
+            logger.error('process restart requested but no callback is installed: %s', reason)
+            return
+        with self._process_restart_lock:
+            logger.error('request process restart: %s', reason)
+            callback(reason)
+
     def _start_env_cache_loop(self):
         def updater():
             while not self.stop_event.is_set():
                 try:
                     self._refresh_env_cache()
                 except Exception as e:
-                    print(f'[ENV] update error: {e}')
+                    logger.warning('env update error: %s', e)
                 time.sleep(self.env_update_interval)
 
         self.env_thread = threading.Thread(target=updater, daemon=True)
@@ -174,7 +206,7 @@ class CarServer:
                     })
                     self._sync_oled_alarm(env)
                 except Exception as e:
-                    print(f'[OLED] update error: {e}')
+                    logger.warning('OLED update error: %s', e)
                 time.sleep(0.5)
 
         self.oled_thread = threading.Thread(target=update, daemon=True)
@@ -182,17 +214,22 @@ class CarServer:
 
     def _start_mic_watchdog(self):
         def watchdog():
+            self._mic_watchdog_started_at = time.monotonic()
             while not self.stop_event.is_set():
                 healthy = self.mic_stream.is_healthy(self.mic_health_timeout)
                 if not healthy:
+                    startup_age = time.monotonic() - self._mic_watchdog_started_at
+                    if startup_age < self.mic_startup_grace_sec and self.mic_stream.get_last_ok_ts() <= 0:
+                        time.sleep(0.2)
+                        continue
                     age = time.time() - self.mic_stream.get_last_ok_ts()
                     if not self.mic_fail_safe_active:
-                        print(f'[SAFE] MIC unhealthy age={age:.2f}s timeout={self.mic_health_timeout:.2f}s -> motor.stop()')
-                        self.motor.stop()
+                        logger.warning('MIC unhealthy age=%.2fs timeout=%.2fs -> safe stop', age, self.mic_health_timeout)
+                        self._safe_stop_motion('mic unhealthy')
                         self.mic_fail_safe_active = True
                 else:
                     if self.mic_fail_safe_active:
-                        print('[SAFE] MIC recovered')
+                        logger.info('MIC recovered')
                     self.mic_fail_safe_active = False
                 time.sleep(0.2)
 
@@ -219,12 +256,34 @@ class CarServer:
                             should_stop = True
 
                 if should_stop:
-                    print(f'[SAFE] command timeout age={age:.2f}s timeout={self.command_timeout_sec:.2f}s -> motor.stop()')
-                    self.motor.stop()
+                    logger.warning('command timeout age=%.2fs timeout=%.2fs -> safe stop', age, self.command_timeout_sec)
+                    self._safe_stop_motion('command timeout')
                 time.sleep(0.1)
 
         self.command_watchdog_thread = threading.Thread(target=watchdog, daemon=True)
         self.command_watchdog_thread.start()
+
+    def _claim_control_owner(self, owner, *, is_app_source: bool, now: float) -> bool:
+        lease_sec = max(self.command_timeout_sec + 0.2, float(self.control_lease_sec))
+        with self._control_lock:
+            active_other = (
+                self._control_owner is not None
+                and self._control_owner != owner
+                and now < self._control_owner_until
+            )
+            if active_other and not is_app_source:
+                return False
+            self._control_owner = owner
+            self._control_owner_until = now + lease_sec
+            return True
+
+    def _release_control_owner(self, owner) -> bool:
+        with self._control_lock:
+            if self._control_owner != owner:
+                return False
+            self._control_owner = None
+            self._control_owner_until = 0.0
+            return True
 
     def _start_mic_pipeline(self, asr_url=None):
         if not self.mic_enabled:
@@ -243,7 +302,7 @@ class CarServer:
             self.motor.center_servos(90, 90, force=True)
             time.sleep(0.12)
         else:
-            print('[MOTOR] startup servo homing disabled')
+            logger.info('startup servo homing disabled')
         self.ultrasonic.start()
         self.pcf8591.start()
         self.infrared.start()
@@ -253,20 +312,21 @@ class CarServer:
         self.oled.start()
         if self.mic_enabled:
             if self.mic_auto_mode:
-                print('[MIC] auto mode: waiting for PC websocket client to resolve ASR url')
+                logger.info('auto mode: waiting for PC websocket client to resolve ASR url')
             else:
                 self._start_mic_pipeline()
         else:
-            print('[MIC] disabled')
+            logger.info('disabled')
 
         self._refresh_env_cache()
         self._start_env_cache_loop()
         self._update_oled_loop()
         self._start_command_watchdog()
-        print(f'[SYS] all modules started (asr_url={self.mic_stream.asr_url}, mic_timeout={self.mic_health_timeout}s)')
+        logger.info('all modules started (asr_url=%s, mic_timeout=%ss)', self.mic_stream.asr_url, self.mic_health_timeout)
 
     def stop_all(self):
         self.stop_event.set()
+        self._safe_stop_motion('server shutdown')
         if self.command_watchdog_thread and self.command_watchdog_thread.is_alive():
             self.command_watchdog_thread.join(timeout=1.0)
         if self.mic_watchdog_thread and self.mic_watchdog_thread.is_alive():
@@ -291,7 +351,12 @@ class CarServer:
 
     async def handle_client(self, ws):
         addr = ws.remote_address
-        print(f'[WS] connected: {addr}')
+        owner_id = id(ws)
+        if not is_ws_authorized(ws, self.auth_token):
+            logger.warning('reject unauthorized client: %s', addr)
+            await ws.close(code=1008, reason='unauthorized')
+            return
+        logger.info('connected: %s', addr)
         if self.mic_enabled and self.mic_auto_mode:
             peer_ip = addr[0] if isinstance(addr, tuple) and len(addr) >= 1 else None
             if peer_ip:
@@ -301,12 +366,12 @@ class CarServer:
                     asr_path = '/' + asr_path
                 auto_url = f'ws://{peer_ip}:{asr_port}{asr_path}'
                 if self.mic_stream.asr_url != auto_url and self.mic_stream.started:
-                    print(f'[MIC] PC changed, restart mic stream: {self.mic_stream.asr_url} -> {auto_url}')
+                    logger.info('PC changed, restart mic stream: %s -> %s', self.mic_stream.asr_url, auto_url)
                     self.mic_stream.stop()
-                print(f'[MIC] auto ASR url from connected PC: {auto_url}')
+                logger.info('auto ASR url from connected PC: %s', auto_url)
                 self._start_mic_pipeline(asr_url=auto_url)
             else:
-                print('[MIC] auto mode failed: cannot parse client ip from websocket peer')
+                logger.warning('auto mode failed: cannot parse client ip from websocket peer')
 
         async def recv_commands():
             async for msg in ws:
@@ -321,6 +386,8 @@ class CarServer:
                             if isinstance(cmd_payload, dict) else ''
                         is_app_source = source == 'app'
                         now = time.monotonic()
+                        if not self._claim_control_owner(owner_id, is_app_source=is_app_source, now=now):
+                            continue
                         if is_app_source:
                             self.manual_override_until = now + self.manual_override_sec
                         elif now < self.manual_override_until:
@@ -329,7 +396,7 @@ class CarServer:
                             continue
                         self.execute_command(CommandPacket.from_dict(cmd_payload))
                 except Exception as e:
-                    print(f'[WS] command error: {e}')
+                    logger.warning('command error: %s', e)
         
         async def send_env():
             while True:
@@ -343,20 +410,35 @@ class CarServer:
                 now = time.monotonic()
                 if self.env_debug_interval > 0 and now - self._last_env_debug_log_ts >= self.env_debug_interval:
                     self._last_env_debug_log_ts = now
-                    print(f"[ENV] T={env_packet.temp_c:.1f} L={env_packet.light_lux} S={env_packet.smoke}")
+                    logger.debug('T=%.1f L=%s S=%s', env_packet.temp_c, env_packet.light_lux, env_packet.smoke)
                 await asyncio.sleep(self.env_update_interval)
 
         async def send_video():
             last_seq = -1
             last_change_t = time.monotonic()
             last_stale_log_t = 0.0
+            stale_restart_sec = float(os.getenv('RASPBOT_CAMERA_STALE_RESTART_SEC', '8'))
             while True:
                 seq, jpeg = self.camera.get_frame()
                 if not jpeg or seq == last_seq:
                     now = time.monotonic()
-                    if now - last_change_t >= 2.0 and now - last_stale_log_t >= 2.0:
+                    stale_age = now - last_change_t
+                    if stale_age >= 2.0 and now - last_stale_log_t >= 2.0:
                         last_stale_log_t = now
-                        print(f'[CAM] stale video stream seq={seq} has_jpeg={bool(jpeg)} fps={self.camera.get_fps()}')
+                        logger.warning(
+                            'stale video stream seq=%s has_jpeg=%s fps=%s age=%.1fs',
+                            seq, bool(jpeg), self.camera.get_fps(), stale_age,
+                        )
+                    if stale_restart_sec > 0 and stale_age >= stale_restart_sec:
+                        logger.warning('stale for %.1fs -> restart camera', stale_age)
+                        last_change_t = time.monotonic()
+                        last_stale_log_t = 0.0
+                        restart_status = await asyncio.to_thread(self.camera.restart)
+                        if restart_status == CameraRestartStatus.OK:
+                            last_seq = -1
+                        elif restart_status == CameraRestartStatus.FATAL:
+                            self._request_process_restart('camera restart failed')
+                            return
                     await asyncio.sleep(0.01)
                     continue
                 last_seq = seq
@@ -372,8 +454,9 @@ class CarServer:
         except websockets.ConnectionClosed:
             pass
         finally:
-            self.motor.stop()
-            print(f'[WS] disconnected: {addr}')
+            if self._release_control_owner(owner_id):
+                self._safe_stop_motion('control owner disconnected')
+            logger.info('disconnected: %s', addr)
 
 def resolve_asr_url(cli_url):
     def _clean(v):
@@ -382,17 +465,17 @@ def resolve_asr_url(cli_url):
     cli_url = _clean(cli_url)
     if cli_url:
         if cli_url.lower() == 'auto':
-            print('[MIC] use ASR auto mode from CLI')
+            logger.info('use ASR auto mode from CLI')
             return 'auto'
-        print(f'[MIC] use ASR from CLI: {cli_url}')
+        logger.info('use ASR from CLI: %s', cli_url)
         return cli_url
 
     env_url = _clean(os.getenv('RASPBOT_ASR_URL') or os.getenv('ASR_WS_URL'))
     if env_url:
         if env_url.lower() == 'auto':
-            print('[MIC] use ASR auto mode from env')
+            logger.info('use ASR auto mode from env')
             return 'auto'
-        print(f'[MIC] use ASR from env: {env_url}')
+        logger.info('use ASR from env: %s', env_url)
         return env_url
 
     pc_ip = _clean(os.getenv('RASPBOT_PC_IP') or os.getenv('ASR_HOST'))
@@ -404,24 +487,36 @@ def resolve_asr_url(cli_url):
         asr_path = '/' + asr_path
     if pc_ip:
         auto_url = f'ws://{pc_ip}:{asr_port}{asr_path}'
-        print(f'[MIC] auto ASR url from configured PC IP: {auto_url}')
+        logger.info('auto ASR url from configured PC IP: %s', auto_url)
         return auto_url
 
-    print('[MIC] auto mode: ASR url will follow connected PC websocket client IP')
+    logger.info('auto mode: ASR url will follow connected PC websocket client IP')
     return 'auto'
 
 
-async def main(host, port, asr_url, mic_health_timeout):
+async def main(host, port, asr_url, mic_health_timeout, auth_token):
+    validate_auth_config(host, auth_token, component="car websocket")
+    if str(asr_url or "").strip().lower() == "auto":
+        validate_auth_config(host, auth_token, component="mic auto mode")
     server = CarServer(
         asr_url=asr_url,
         mic_health_timeout=mic_health_timeout,
+        auth_token=auth_token,
     )
     loop = asyncio.get_running_loop()
     shutdown = loop.create_future()
+    restart_requested = {"value": False, "reason": ""}
 
     def request_shutdown():
         if not shutdown.done():
             shutdown.set_result(None)
+
+    def request_process_restart(reason):
+        restart_requested["value"] = True
+        restart_requested["reason"] = str(reason or "unknown")
+        loop.call_soon_threadsafe(request_shutdown)
+
+    server.set_process_restart_callback(request_process_restart)
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -429,24 +524,27 @@ async def main(host, port, asr_url, mic_health_timeout):
         except (NotImplementedError, RuntimeError, ValueError):
             signal.signal(sig, lambda _signum, _frame: request_shutdown())
 
-    server.start_all()
-
     try:
+        server.start_all()
         for _ in range(60):
             _, jpeg = server.camera.get_frame()
             if jpeg:
                 break
             await asyncio.sleep(0.1)
 
-        print(f'[WS] start ws://{host}:{port}')
+        logger.info('start ws://%s:%s', host, port)
         async with websockets.serve(
             server.handle_client, host, port,
             max_size=10*1024*1024, ping_interval=20, ping_timeout=10
         ):
             await shutdown
     finally:
-        print('[SYS] stopping all modules')
+        logger.info('stopping all modules')
         server.stop_all()
+    if restart_requested["value"]:
+        reason = restart_requested["reason"]
+        logger.error('restarting car server process reason=%s', reason)
+        os.execvpe(sys.executable, [sys.executable] + sys.argv, os.environ.copy())
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
@@ -454,7 +552,8 @@ if __name__ == '__main__':
     p.add_argument('--port', type=int, default=int(os.getenv('RASPBOT_CAR_PORT', '5001')))
     p.add_argument('--asr-url', default=os.getenv('RASPBOT_ASR_URL', None))
     p.add_argument('--mic-health-timeout', type=float, default=float(os.getenv('MIC_HEALTH_TIMEOUT', '2')))
+    p.add_argument('--auth-token', default=os.getenv('RASPBOT_AUTH_TOKEN', ''))
     p.add_argument('--disable-mic-stream', action='store_true')
     args = p.parse_args()
     asr_url = '' if args.disable_mic_stream else resolve_asr_url(args.asr_url)
-    asyncio.run(main(args.host, args.port, asr_url, args.mic_health_timeout))
+    asyncio.run(main(args.host, args.port, asr_url, args.mic_health_timeout, args.auth_token))

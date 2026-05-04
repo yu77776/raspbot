@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import logging
 import os
 import threading
 from dataclasses import dataclass
@@ -14,22 +13,20 @@ from typing import Optional, Set
 import websockets
 
 from . import settings as cfg
+from .logger_setup import setup_logger
 from .packets import CommandPacket
-from .protocol import TYPE_APP_VOICE
-from .voice_cry_bridge import CryStateStore, parse_voice_intent
+from .protocol import (
+    TYPE_APP_VOICE,
+    BackgroundService,
+    _safe_ws_path,
+    append_auth_token_to_uri,
+    is_ws_authorized,
+    strip_auth_fields,
+    validate_auth_config,
+)
+from .voice_cry_bridge import CryStateStore, merge_env_cry, parse_voice_intent
 
-logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
-logging.getLogger("websockets.asyncio.server").setLevel(logging.CRITICAL)
-
-
-def _safe_ws_path(ws) -> str:
-    path = getattr(ws, "path", None)
-    if path:
-        return path
-    req = getattr(ws, "request", None)
-    if req is not None:
-        return getattr(req, "path", "") or ""
-    return ""
+logger = setup_logger('raspbot.appgw')
 
 
 @dataclass
@@ -40,10 +37,19 @@ class GatewayConfig:
     car_port: int = cfg.DEFAULT_CAR_PORT
     reconnect_delay: float = 1.5
     cry_state: Optional[CryStateStore] = None
+    auth_token: str = ""
 
     @property
     def car_uri(self) -> str:
-        return f"ws://{self.car_host}:{self.car_port}"
+        return append_auth_token_to_uri(f"ws://{self.car_host}:{self.car_port}", self.auth_token)
+
+
+def _is_app_voice_obj(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    msg_type = str(payload.get("type", "") or "").strip().lower()
+    action = str(payload.get("action", "") or "").strip().lower()
+    return msg_type == TYPE_APP_VOICE or action in {"voice", TYPE_APP_VOICE}
 
 
 class AppGateway:
@@ -57,6 +63,7 @@ class AppGateway:
         self._car_ws = None
         self._car_send_lock = asyncio.Lock()
         self._car_ready = asyncio.Event()
+        self._last_merged_cry: Optional[tuple] = None
 
     async def _add_client(self, ws):
         async with self._clients_lock:
@@ -85,12 +92,26 @@ class AppGateway:
     async def _send_to_car(self, payload: bytes):
         if not self._car_ready.is_set():
             return
+        payload = self._strip_command_auth(payload)
         payload = self._merge_command_cry(payload)
         async with self._car_send_lock:
             ws = self._car_ws
             if ws is None:
                 return
             await ws.send(payload)
+
+    def _strip_command_auth(self, command_packet):
+        if not isinstance(command_packet, (bytes, bytearray)) or len(command_packet) < 2:
+            return command_packet
+        if command_packet[0] != cfg.MSG_COMMAND:
+            return command_packet
+        try:
+            payload = json.loads(bytes(command_packet[1:]).decode("utf-8"))
+        except Exception:
+            return command_packet
+        if not isinstance(payload, dict):
+            return command_packet
+        return bytes([cfg.MSG_COMMAND]) + json.dumps(strip_auth_fields(payload), ensure_ascii=False).encode("utf-8")
 
     async def _car_loop(self, stop_event: threading.Event):
         while not stop_event.is_set():
@@ -106,7 +127,7 @@ class AppGateway:
                 ) as car_ws:
                     self._car_ws = car_ws
                     self._car_ready.set()
-                    print(f"[APPGW] car connected: {self.cfg.car_uri}")
+                    logger.info('car connected: %s', self.cfg.car_uri)
                     async for message in car_ws:
                         if isinstance(message, str):
                             await self._broadcast_to_apps(message)
@@ -122,7 +143,7 @@ class AppGateway:
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                print(f"[APPGW] car disconnected: {exc}")
+                logger.warning('car disconnected: %s', exc)
             finally:
                 self._car_ws = None
                 self._car_ready.clear()
@@ -132,16 +153,27 @@ class AppGateway:
     async def handle_app(self, ws):
         path = _safe_ws_path(ws) or "/"
         peer = getattr(ws, "remote_address", None)
+        if not is_ws_authorized(ws, self.cfg.auth_token):
+            logger.warning('reject unauthorized app: %s path=%s', peer, path)
+            await ws.close(code=1008, reason="unauthorized")
+            return
         await self._add_client(ws)
-        print(f"[APPGW] app connected: {peer} path={path}")
+        logger.info('app connected: %s path=%s', peer, path)
         try:
             async for message in ws:
                 if isinstance(message, str):
-                    voice_cmd = self._build_voice_command_from_app_text(message)
-                    if voice_cmd is not None:
-                        await self._send_to_car(voice_cmd)
-                    elif self._is_app_voice_json(message):
-                        print("[APPGW] app_voice ignored: no matched intent")
+                    try:
+                        payload = json.loads(message)
+                    except Exception:
+                        payload = None
+                    if isinstance(payload, dict):
+                        voice_cmd = self._build_voice_command_from_obj(payload)
+                        if voice_cmd is not None:
+                            await self._send_to_car(voice_cmd)
+                        elif _is_app_voice_obj(payload):
+                            logger.info('app_voice ignored: no matched intent')
+                        else:
+                            await self._send_to_car(message)
                     else:
                         await self._send_to_car(message)
                     continue
@@ -154,13 +186,11 @@ class AppGateway:
             pass
         finally:
             await self._drop_client(ws)
-            print(f"[APPGW] app disconnected: {peer}")
+            logger.info('app disconnected: %s', peer)
 
     async def run(self, stop_event: Optional[threading.Event] = None):
-        print(
-            f"[APPGW] listen ws://{self.cfg.listen_host}:{self.cfg.listen_port} "
-            f"-> {self.cfg.car_uri} (0x02 => car, 0x01/0x03 => app)"
-        )
+        validate_auth_config(self.cfg.listen_host, self.cfg.auth_token, component="app gateway")
+        logger.info('listen ws://%s:%s -> %s (0x02 => car, 0x01/0x03 => app)', self.cfg.listen_host, self.cfg.listen_port, self.cfg.car_uri)
         local_stop = stop_event or threading.Event()
         car_task = asyncio.create_task(self._car_loop(local_stop))
         try:
@@ -178,11 +208,7 @@ class AppGateway:
             car_task.cancel()
             await asyncio.gather(car_task, return_exceptions=True)
 
-    def _build_voice_command_from_app_text(self, text_message: str) -> Optional[bytes]:
-        try:
-            payload = json.loads(text_message)
-        except Exception:
-            return None
+    def _build_voice_command_from_obj(self, payload: dict) -> Optional[bytes]:
         if not isinstance(payload, dict):
             return None
 
@@ -208,22 +234,8 @@ class AppGateway:
             play_song=str(intent.get("play_song", "") or ""),
             stop_audio=bool(intent.get("stop_audio", False)),
         )
-        print(
-            f"[APPGW] app_voice text={voice_text!r} -> action={cmd.action} "
-            f"song={cmd.play_song!r} stop_audio={cmd.stop_audio}"
-        )
+        logger.info('app_voice text=%r -> action=%s song=%r stop_audio=%s', voice_text, cmd.action, cmd.play_song, cmd.stop_audio)
         return bytes([cfg.MSG_COMMAND]) + json.dumps(cmd.to_wire_dict()).encode("utf-8")
-
-    def _is_app_voice_json(self, text_message: str) -> bool:
-        try:
-            payload = json.loads(text_message)
-        except Exception:
-            return False
-        if not isinstance(payload, dict):
-            return False
-        msg_type = str(payload.get("type", "") or "").strip().lower()
-        action = str(payload.get("action", "") or "").strip().lower()
-        return msg_type == TYPE_APP_VOICE or action in {"voice", TYPE_APP_VOICE}
 
     def _merge_command_cry(self, command_packet):
         if self._cry_state is None:
@@ -238,11 +250,20 @@ class AppGateway:
             return command_packet
         if not isinstance(payload, dict):
             return command_packet
+        payload = strip_auth_fields(payload)
 
         cry = self._cry_state.snapshot()
-        payload["remote_crying"] = bool(cry.crying)
-        payload["remote_cry_score"] = int(cry.cry_score)
-        payload["remote_alarm"] = str(cry.alarm or "")
+        new_cry = (bool(cry.crying), int(cry.cry_score), str(cry.alarm or ""))
+        # Skip re-serialization when cry state is unchanged and payload already matches.
+        if new_cry == self._last_merged_cry:
+            if (payload.get("remote_crying") == new_cry[0]
+                    and payload.get("remote_cry_score") == new_cry[1]
+                    and payload.get("remote_alarm") == new_cry[2]):
+                return command_packet
+        self._last_merged_cry = new_cry
+        payload["remote_crying"] = new_cry[0]
+        payload["remote_cry_score"] = new_cry[1]
+        payload["remote_alarm"] = new_cry[2]
         return bytes([cfg.MSG_COMMAND]) + json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
     def _merge_env_cry(self, env_packet: bytes) -> bytes:
@@ -254,54 +275,8 @@ class AppGateway:
             return env_packet
         if not isinstance(payload, dict):
             return env_packet
-
-        cry = self._cry_state.snapshot()
-        payload["crying"] = bool(cry.crying)
-        payload["cry_score"] = int(cry.cry_score)
-
-        base_alarm = str(payload.get("alarm", "") or "").strip()
-        if cry.alarm:
-            if not base_alarm:
-                payload["alarm"] = cry.alarm
-            elif cry.alarm not in base_alarm:
-                payload["alarm"] = f"{base_alarm}; {cry.alarm}"
-
-        return bytes([cfg.MSG_ENV]) + json.dumps(payload, ensure_ascii=False).encode("utf-8")
-
-
-class AppGatewayRunner:
-    """Run AppGateway in a background thread."""
-
-    def __init__(self, cfg_: GatewayConfig):
-        self.cfg = cfg_
-        self._gateway = AppGateway(cfg_)
-        self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._error: Optional[Exception] = None
-
-    def _run(self):
-        try:
-            asyncio.run(self._gateway.run(stop_event=self._stop_event))
-        except Exception as exc:
-            self._error = exc
-            print(f"[APPGW] server thread error: {exc}")
-
-    def start(self):
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop_event.clear()
-        self._error = None
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def stop(self, timeout: float = 3.0):
-        self._stop_event.set()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=timeout)
-
-    @property
-    def error(self) -> Optional[Exception]:
-        return self._error
+        merged = merge_env_cry(payload, self._cry_state)
+        return bytes([cfg.MSG_ENV]) + json.dumps(merged, ensure_ascii=False).encode("utf-8")
 
 
 def parse_args():
@@ -311,6 +286,7 @@ def parse_args():
     p.add_argument("--car-host", default=os.getenv("RASPBOT_CAR_IP", os.getenv("CAR_HOST", cfg.DEFAULT_CAR_HOST)))
     p.add_argument("--car-port", type=int, default=int(os.getenv("RASPBOT_CAR_PORT", str(cfg.DEFAULT_CAR_PORT))))
     p.add_argument("--reconnect-delay", type=float, default=float(os.getenv("APP_GATEWAY_RECONNECT_DELAY", "1.5")))
+    p.add_argument("--auth-token", default=os.getenv("RASPBOT_AUTH_TOKEN", ""))
     return p.parse_args()
 
 
@@ -322,6 +298,7 @@ def main():
         car_host=args.car_host,
         car_port=args.car_port,
         reconnect_delay=args.reconnect_delay,
+        auth_token=args.auth_token,
     )
     asyncio.run(AppGateway(cfg_).run())
 

@@ -3,6 +3,7 @@ package com.example.raspbotapp.ui
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
 import android.util.AttributeSet
@@ -22,21 +23,28 @@ class SimpleTrendView @JvmOverloads constructor(
     }
 
     private val distancePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#D4A574")
+        color = Color.parseColor("#4DB6FF")
         style = Paint.Style.STROKE
-        strokeWidth = dp(2f)
+        strokeWidth = dp(2.4f)
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
     }
 
     private val tempPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#7AB88A")
+        color = Color.parseColor("#FF6B6B")
         style = Paint.Style.STROKE
-        strokeWidth = dp(2f)
+        strokeWidth = dp(2.4f)
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
     }
 
     private val lightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#C9A84A")
+        color = Color.parseColor("#F6C945")
         style = Paint.Style.STROKE
-        strokeWidth = dp(2f)
+        strokeWidth = dp(2.4f)
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+        pathEffect = DashPathEffect(floatArrayOf(dp(6f), dp(4f)), 0f)
     }
 
     private val legendPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -82,9 +90,9 @@ class SimpleTrendView @JvmOverloads constructor(
         drawSeries(canvas, light, lightPaint, left, top, drawW, drawH, 0f, 1000f)
 
         val legendY = h - dp(3f)
-        canvas.drawText("Dist", left, legendY, legendPaint.apply { color = distancePaint.color })
-        canvas.drawText("Temp", left + dp(42f), legendY, legendPaint.apply { color = tempPaint.color })
-        canvas.drawText("Light", left + dp(86f), legendY, legendPaint.apply { color = lightPaint.color })
+        canvas.drawText("距离", left, legendY, legendPaint.apply { color = distancePaint.color })
+        canvas.drawText("温度", left + dp(42f), legendY, legendPaint.apply { color = tempPaint.color })
+        canvas.drawText("光照", left + dp(86f), legendY, legendPaint.apply { color = lightPaint.color })
     }
 
     private fun drawSeries(

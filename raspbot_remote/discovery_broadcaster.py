@@ -13,23 +13,38 @@ import subprocess
 import time
 from typing import List
 
+from logger_setup import setup_logger
+
+logger = setup_logger('raspbot.discovery')
+
 
 DEFAULT_NAME = "raspbot"
 DEFAULT_ROLE = "car"
 DEFAULT_SERVICE_PORT = 5001
 DEFAULT_BROADCAST_PORT = 5002
 DEFAULT_INTERVAL_SEC = 1.0
+DEFAULT_PID_FILE = "/tmp/raspbot-car-server.pid"
+
+
+_ip_cache: List[str] = []
+_ip_cache_ts: float = 0.0
+_IP_CACHE_TTL_SEC = 30.0
 
 
 def get_ipv4_addresses() -> List[str]:
+    global _ip_cache, _ip_cache_ts
+    now = time.time()
+    if _ip_cache and now - _ip_cache_ts < _IP_CACHE_TTL_SEC:
+        return list(_ip_cache)
+
     ips = []
     try:
         out = subprocess.check_output(["hostname", "-I"], text=True, timeout=1.0)
         for token in out.split():
             if _is_usable_ipv4(token) and token not in ips:
                 ips.append(token)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning('hostname -I failed: %s', e)
 
     if not ips:
         try:
@@ -39,9 +54,11 @@ def get_ipv4_addresses() -> List[str]:
             s.close()
             if _is_usable_ipv4(ip):
                 ips.append(ip)
-        except Exception:
-            pass
-    return ips
+        except Exception as e:
+            logger.warning('socket IP discovery failed: %s', e)
+    _ip_cache = ips
+    _ip_cache_ts = now
+    return list(ips)
 
 
 def _is_usable_ipv4(value: str) -> bool:
@@ -57,11 +74,13 @@ def _is_usable_ipv4(value: str) -> bool:
     return not value.startswith(("127.", "169.254."))
 
 
-def is_tcp_listening(port: int) -> bool:
+def is_server_running(pid_file: str = DEFAULT_PID_FILE) -> bool:
     try:
-        with socket.create_connection(("127.0.0.1", int(port)), timeout=0.2):
-            return True
-    except OSError:
+        with open(pid_file, "r", encoding="utf-8") as f:
+            pid = int((f.read() or "").strip())
+        os.kill(pid, 0)
+        return True
+    except Exception:
         return False
 
 
@@ -73,7 +92,7 @@ def build_payload(args, seq: int) -> dict:
         "ip": ips[0] if ips else "",
         "ips": ips,
         "port": int(args.service_port),
-        "server_running": is_tcp_listening(args.service_port),
+        "server_running": is_server_running(args.pid_file),
         "hostname": socket.gethostname(),
         "seq": seq,
         "ts": int(time.time()),
@@ -86,10 +105,9 @@ def run(args) -> None:
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
     seq = 0
-    print(
-        f"[DISCOVERY] broadcasting name={args.name} service={args.service_port} "
-        f"udp={args.broadcast_port} interval={args.interval}s",
-        flush=True,
+    logger.info(
+        'broadcasting name=%s service=%s udp=%s interval=%ss',
+        args.name, args.service_port, args.broadcast_port, args.interval,
     )
     while True:
         seq += 1
@@ -98,9 +116,9 @@ def run(args) -> None:
         try:
             sock.sendto(data, ("255.255.255.255", int(args.broadcast_port)))
         except OSError as exc:
-            print(f"[DISCOVERY] send failed: {exc}", flush=True)
+            logger.warning('send failed: %s', exc)
         if seq == 1 or seq % 30 == 0:
-            print(f"[DISCOVERY] {payload}", flush=True)
+            logger.info('%s', payload)
         time.sleep(float(args.interval))
 
 
@@ -111,6 +129,7 @@ def parse_args():
     p.add_argument("--service-port", type=int, default=int(os.getenv("RASPBOT_CAR_PORT", str(DEFAULT_SERVICE_PORT))))
     p.add_argument("--broadcast-port", type=int, default=int(os.getenv("RASPBOT_DISCOVERY_PORT", str(DEFAULT_BROADCAST_PORT))))
     p.add_argument("--interval", type=float, default=float(os.getenv("RASPBOT_DISCOVERY_INTERVAL", str(DEFAULT_INTERVAL_SEC))))
+    p.add_argument("--pid-file", default=os.getenv("RASPBOT_CAR_PID_FILE", DEFAULT_PID_FILE))
     return p.parse_args()
 
 

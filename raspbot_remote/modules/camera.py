@@ -1,10 +1,22 @@
 #!/usr/bin/env python3
 """Camera capture module for WebSocket JPEG streaming."""
+import os
 import threading
 import time
+from enum import Enum
 
 import cv2
 import numpy as np
+
+from logger_setup import setup_logger
+
+logger = setup_logger('raspbot.camera')
+
+
+class CameraRestartStatus(Enum):
+    OK = "ok"
+    SKIPPED = "skipped"
+    FATAL = "fatal"
 
 try:
     from picamera2 import Picamera2
@@ -34,23 +46,53 @@ class Camera:
         self.fps_timer = time.time()
 
         self.lock = threading.Lock()
+        self.restart_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.ready_event = threading.Event()
         self.thread = None
         self.started = False
+        self.restart_cooldown_sec = float(os.getenv('RASPBOT_CAMERA_RESTART_COOLDOWN_SEC', '6'))
+        self._last_restart_t = 0.0
 
         self.picam2 = None
 
         if HAS_CAMERA:
-            self.picam2 = Picamera2()
-            config = self.picam2.create_video_configuration(
-                main={'format': 'YUV420', 'size': (self.width, self.height)},
-                controls={'FrameRate': self.framerate},
-            )
-            self.picam2.configure(config)
-            print(f'[CAM] init ok size={self.width}x{self.height} fps={self.framerate}')
+            self._open_camera()
+            logger.info('init ok size=%sx%s fps=%s', self.width, self.height, self.framerate)
         else:
-            print('[CAM] picamera2 unavailable, use placeholder frames')
+            logger.warning('picamera2 unavailable, use placeholder frames')
+
+    def _open_camera(self):
+        if not HAS_CAMERA:
+            return
+        self.picam2 = Picamera2()
+        config = self.picam2.create_video_configuration(
+            main={'format': 'YUV420', 'size': (self.width, self.height)},
+            controls={'FrameRate': self.framerate},
+        )
+        self.picam2.configure(config)
+
+    def _close_camera(self):
+        if not HAS_CAMERA or self.picam2 is None:
+            return
+        old = self.picam2
+        self.picam2 = None
+
+        def _do_close():
+            try:
+                old.stop()
+            except Exception:
+                pass
+            try:
+                old.close()
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_do_close, daemon=True)
+        t.start()
+        t.join(timeout=2.0)
+        if t.is_alive():
+            logger.warning('camera close timed out; abandoning old picam2 handle')
 
     def _make_placeholder(self):
         img = np.zeros((self.height, self.width, 3), dtype='uint8')
@@ -75,8 +117,15 @@ class Camera:
     def _run(self):
         placeholder = None
         if HAS_CAMERA:
-            self.picam2.start()
-            self.ready_event.set()
+            try:
+                if self.picam2 is None:
+                    self._open_camera()
+                self.picam2.start()
+                self.ready_event.set()
+            except Exception as exc:
+                logger.exception('camera start failed: %s', exc)
+                self.ready_event.clear()
+                return
         else:
             placeholder = self._make_placeholder()
             self.ready_event.set()
@@ -97,7 +146,7 @@ class Camera:
                             self.frame_count = 0
                             self.fps_timer = time.time()
             except Exception as e:
-                print(f'[CAM] frame loop error: {e}')
+                logger.warning('frame loop error: %s', e)
                 time.sleep(0.1)
                 continue
 
@@ -105,8 +154,7 @@ class Camera:
             elapsed = time.time() - loop_start
             time.sleep(max(0.0, target_period - elapsed))
 
-        if HAS_CAMERA:
-            self.picam2.stop()
+        self._close_camera()
         self.ready_event.clear()
 
     def start(self):
@@ -125,6 +173,50 @@ class Camera:
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=2.0)
         self.started = False
+
+    def restart(self):
+        if not self.restart_lock.acquire(blocking=False):
+            logger.warning('restart already in progress; skip duplicate request')
+            return CameraRestartStatus.SKIPPED
+        try:
+            now = time.monotonic()
+            if self.restart_cooldown_sec > 0 and now - self._last_restart_t < self.restart_cooldown_sec:
+                logger.warning('restart requested during cooldown; skip duplicate request')
+                return CameraRestartStatus.SKIPPED
+            self._last_restart_t = now
+
+            logger.info('restarting camera module')
+            self.stop_event.set()
+            if self.thread and self.thread.is_alive():
+                self.thread.join(timeout=2.0)
+            if self.thread and self.thread.is_alive():
+                logger.warning('capture thread did not exit; closing camera to unblock it')
+                self._close_camera()
+                self.thread.join(timeout=2.0)
+            was_stuck = self.thread and self.thread.is_alive()
+            if was_stuck:
+                logger.error('capture thread still alive after forced close; process restart required')
+                return CameraRestartStatus.FATAL
+
+            self.thread = None
+            self.started = False
+            with self.lock:
+                self.latest_jpeg = b''
+                self.frame_seq = 0
+                self.fps = 0
+                self.frame_count = 0
+                self.fps_timer = time.time()
+            self._close_camera()
+            try:
+                if HAS_CAMERA:
+                    self._open_camera()
+                self.start()
+            except Exception as exc:
+                logger.exception('camera restart failed: %s', exc)
+                return CameraRestartStatus.FATAL
+            return CameraRestartStatus.OK
+        finally:
+            self.restart_lock.release()
 
     def get_fps(self):
         with self.lock:

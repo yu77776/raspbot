@@ -7,7 +7,12 @@ import threading
 import time
 from typing import Optional, Tuple
 
+from logger_setup import setup_logger
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'driver'))
+
+logger = setup_logger('raspbot.motor')
 
 try:
     from YB_Pcb_Car import YB_Pcb_Car
@@ -16,14 +21,7 @@ except ImportError:
     HAS_CAR = False
 
 
-def _as_bool(value):
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    if isinstance(value, str):
-        return value.strip().lower() in {'1', 'true', 'yes', 'on'}
-    return False
+from protocol import as_bool
 
 
 def _clamp_float(value, min_v, max_v):
@@ -46,7 +44,7 @@ class Motor:
         self.last_servo2 = 90
         self.lock = threading.Lock()
         self.dead_band = 1
-        self.closed_loop_enabled = _as_bool(os.getenv('RASPBOT_MOTION_CLOSED_LOOP', '1'))
+        self.closed_loop_enabled = as_bool(os.getenv('RASPBOT_MOTION_CLOSED_LOOP', '1'))
         self.heading_kp = float(os.getenv('RASPBOT_HEADING_KP', '1.8'))
         self.heading_rate_kp = float(os.getenv('RASPBOT_HEADING_RATE_KP', '0.12'))
         self.heading_trim_max = int(max(0, min(120, int(os.getenv('RASPBOT_HEADING_TRIM_MAX', '45')))))
@@ -59,7 +57,7 @@ class Motor:
         self._heading_target_yaw: Optional[float] = None
         self._spin_target_yaw: Optional[float] = None
         self._spin_last_ts = time.monotonic()
-        print(f'[MOTOR] init done (enabled={HAS_CAR})')
+        logger.info('init done (enabled=%s)', HAS_CAR)
 
     def _reset_motion_targets(self):
         self._heading_target_yaw = None
@@ -142,9 +140,7 @@ class Motor:
             r = int(max(-255, min(255, int(right_speed))))
             self.car.Control_Car(l, r)
 
-    def backward(self, speed, left_speed=None, right_speed=None, env_packet=None):
-        left = int(speed if left_speed is None else left_speed)
-        right = int(speed if right_speed is None else right_speed)
+    def backward(self, left, right, env_packet=None):
         imu_motion = self._read_imu_motion(env_packet)
         if imu_motion is None:
             if HAS_CAR:
@@ -222,10 +218,11 @@ class Motor:
         self._mark_action('spin_right')
 
     def stop(self):
-        if HAS_CAR:
-            self.car.Car_Stop()
-        self._reset_motion_targets()
-        self._last_action = 'stop'
+        with self.lock:
+            if HAS_CAR:
+                self.car.Car_Stop()
+            self._reset_motion_targets()
+            self._last_action = 'stop'
 
     def execute_motion(self, action, speed, left_speed=None, right_speed=None, env_packet=None):
         action = str(action or 'stop')
@@ -236,7 +233,7 @@ class Motor:
         if action == 'forward':
             self.forward(left, right, env_packet=env_packet)
         elif action == 'backward':
-            self.backward(speed, left_speed=left, right_speed=right, env_packet=env_packet)
+            self.backward(left, right, env_packet=env_packet)
         elif action == 'spin_left':
             self.spin_left(speed, env_packet=env_packet)
         elif action == 'spin_right':

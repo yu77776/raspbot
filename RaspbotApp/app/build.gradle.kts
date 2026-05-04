@@ -29,6 +29,7 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "RASPBOT_TURN_CREDENTIAL", "\"${localOrEnv("RASPBOT_TURN_CREDENTIAL")}\"")
+        buildConfigField("String", "RASPBOT_AUTH_TOKEN", "\"${localOrEnv("RASPBOT_AUTH_TOKEN")}\"")
     }
 
     splits {

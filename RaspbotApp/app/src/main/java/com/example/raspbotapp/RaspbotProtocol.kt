@@ -2,7 +2,9 @@ package com.example.raspbotapp
 
 object RaspbotProtocol {
     const val CLOUD_CONNECTION_LABEL = "云端"
-    const val DEFAULT_SIGNALING_URL = "ws://47.108.164.190:8765/pc_room"
+    const val CLOUD_HOST = "47.108.164.190"
+    const val CLOUD_PORT = 8765
+    const val DEFAULT_SIGNALING_URL = "ws://$CLOUD_HOST:$CLOUD_PORT/pc_room"
     const val LOCAL_WS_PORT = 7000
 
     const val APP_CMD_PREFIX: Byte = 0x02

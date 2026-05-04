@@ -1,9 +1,10 @@
 """Environment packet sampling for the car server."""
 
+import subprocess
 import time
 from typing import Callable, Optional, Tuple
 
-from protocol import EnvPacket, ImuPacket
+from protocol import EnvPacket, ImuPacket, is_cliff_track
 
 
 class EnvSampler:
@@ -57,10 +58,12 @@ class EnvSampler:
         alarms = []
         if env.get("smoke_alarm"):
             alarms.append("smoke")
-        if _is_cliff_track(track):
+        if is_cliff_track(track):
             alarms.append("cliff")
         if crying and cry_score >= self.cry_alarm_score_min:
             alarms.append("cry")
+        if _check_undervoltage():
+            alarms.append("low_battery")
         if remote_alarm:
             alarms.append(remote_alarm)
 
@@ -108,10 +111,32 @@ class EnvSampler:
         self.audio.set_volume(volume)
 
 
-def _is_cliff_track(track) -> bool:
-    if not isinstance(track, list) or len(track) < 4:
-        return False
+def _check_undervoltage() -> bool:
+    """Check Pi PMIC undervoltage flag via vcgencmd get_throttled.
+
+    Bit 0 (0x1) = undervoltage currently occurring.
+    Bit 16 (0x10000) = undervoltage has occurred since last check.
+    Result is cached for 30s since the flag is sticky.
+    """
+    now = time.monotonic()
+    if _check_undervoltage._cached_ts > 0 and now - _check_undervoltage._cached_ts < 30.0:
+        return _check_undervoltage._cached_value
     try:
-        return all(int(v) == 0 for v in track[:4])
-    except (TypeError, ValueError):
-        return False
+        out = subprocess.check_output(
+            ["vcgencmd", "get_throttled"],
+            text=True, timeout=2.0,
+        )
+        hex_str = out.strip().split("=", 1)[-1] if "=" in out else out.strip()
+        if hex_str.startswith("0x") or hex_str.startswith("0X"):
+            hex_str = hex_str[2:]
+        flags = int(hex_str, 16)
+        result = bool(flags & 0x10001)
+    except Exception:
+        result = False
+    _check_undervoltage._cached_ts = now
+    _check_undervoltage._cached_value = result
+    return result
+
+
+_check_undervoltage._cached_ts = 0.0
+_check_undervoltage._cached_value = False

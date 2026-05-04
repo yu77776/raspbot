@@ -20,7 +20,8 @@ def _read_json(path: Path) -> Dict[str, Any]:
     except FileNotFoundError:
         return {}
     except Exception as exc:
-        print(f"[CONFIG] warn: cannot read {path.name}: {exc}")
+        from .logger_setup import setup_logger
+        setup_logger('raspbot.config').warning('cannot read %s: %s', path.name, exc)
         return {}
 
 

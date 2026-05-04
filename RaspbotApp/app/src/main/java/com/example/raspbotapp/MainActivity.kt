@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.View
 import android.view.WindowManager
@@ -62,6 +63,9 @@ class MainActivity : AppCompatActivity() {
         private const val TREND_WINDOW_MS = 5 * 60 * 1000L
         private const val TREND_RENDER_POINTS = 72
         private const val TAG = "RaspbotApp"
+
+        private const val PLAY_SONG_NEXT = "__next__"
+        private const val PLAY_SONG_PREV = "__prev__"
     }
 
     private data class TrendSample(val timestampMs: Long, val value: Float)
@@ -104,7 +108,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvSpeakerVolume: TextView
     private lateinit var btnServoCenter: Button
     private lateinit var btnStop: Button
+    private lateinit var btnSpinLeft: Button
+    private lateinit var btnSpinRight: Button
     private lateinit var btnAudioToggle: Button
+    private lateinit var btnAudioPrev: Button
+    private lateinit var btnAudioNext: Button
 
     // Mine
     private lateinit var etHost: EditText
@@ -159,6 +167,8 @@ class MainActivity : AppCompatActivity() {
     private var speed = 80
     private var speakerVolume = 80
     private var speakerVolumeDirty = true
+    private var speakerVolumeDragging = false
+    private var speakerVolumeNeedsInitialCarSync = true
     private var audioPlaying = false
     private var trackingMode = false
     private var applyingHost = false
@@ -175,6 +185,16 @@ class MainActivity : AppCompatActivity() {
     private val trendDistance = ArrayDeque<TrendSample>()
     private val trendTemp = ArrayDeque<TrendSample>()
     private val trendLight = ArrayDeque<TrendSample>()
+    private val trendLock = Any()
+
+    // Cached env display values to skip redundant UI posts
+    private var lastDispTemp: Float = Float.NaN
+    private var lastDispLux: Int = -1
+    private var lastDispSmoke: Int = -1
+    private var lastDispDist: Int = -1
+    private var lastDispVolume: Int = -1
+    private var lastDispCrying: Boolean? = null
+    private var lastDispFps: Int = -1
 
     private lateinit var webRtcClient: RaspbotWebRtcClient
     private lateinit var connectionClient: RaspbotConnectionClient
@@ -250,7 +270,11 @@ class MainActivity : AppCompatActivity() {
         tvSpeakerVolume = findViewById(R.id.tvSpeakerVolume)
         btnServoCenter = findViewById(R.id.btnServoCenter)
         btnStop = findViewById(R.id.btnStop)
+        btnSpinLeft = findViewById(R.id.btnSpinLeft)
+        btnSpinRight = findViewById(R.id.btnSpinRight)
         btnAudioToggle = findViewById(R.id.btnAudioToggle)
+        btnAudioPrev = findViewById(R.id.btnAudioPrev)
+        btnAudioNext = findViewById(R.id.btnAudioNext)
 
         // Mine
         etHost = findViewById(R.id.etHost)
@@ -366,7 +390,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onCommandChannelOpen() {
-                    sendCommand()
+                    sendCommand(force = true)
                 }
 
                 override fun isSignalingConnected(): Boolean {
@@ -426,17 +450,46 @@ class MainActivity : AppCompatActivity() {
             .edit()
             .putBoolean(KEY_TRACKING_MODE, value)
             .apply()
-        sendCommand()
+        syncTrackingModeUi()
+        sendCommand(force = true)
     }
 
     private fun saveSpeakerVolume(value: Int) {
         speakerVolume = value.coerceIn(0, 100)
         speakerVolumeDirty = true
+        updateSpeakerVolumeUi()
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putInt(KEY_SPEAKER_VOLUME, speakerVolume)
             .apply()
         sendCommand()
+    }
+
+    private fun syncSpeakerVolumeFromCar(value: Int) {
+        if (!speakerVolumeNeedsInitialCarSync) return
+        if (speakerVolumeDragging) return
+        val newVolume = value.coerceIn(0, 100)
+        speakerVolumeNeedsInitialCarSync = false
+        if (newVolume == speakerVolume) return
+        speakerVolume = newVolume
+        speakerVolumeDirty = false
+        updateSpeakerVolumeUi()
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putInt(KEY_SPEAKER_VOLUME, newVolume)
+            .apply()
+    }
+
+    private fun updateSpeakerVolumeUi() {
+        if (::seekSpeakerVolume.isInitialized && seekSpeakerVolume.progress != speakerVolume) {
+            seekSpeakerVolume.progress = speakerVolume
+        }
+        if (::tvSpeakerVolume.isInitialized) {
+            tvSpeakerVolume.text = "$speakerVolume%"
+        }
+        if (::tvVolume.isInitialized) {
+            tvVolume.text = "音量 ${speakerVolume}%"
+        }
     }
 
     private fun setupControls() {
@@ -464,15 +517,24 @@ class MainActivity : AppCompatActivity() {
 
         seekSpeakerVolume.max = 100
         seekSpeakerVolume.progress = speakerVolume
-        tvSpeakerVolume.text = "$speakerVolume%"
+        updateSpeakerVolumeUi()
         seekSpeakerVolume.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
                 speakerVolume = progress.coerceIn(0, 100)
-                tvSpeakerVolume.text = "$speakerVolume%"
-                if (fromUser) sendCommand()
+                updateSpeakerVolumeUi()
+                if (fromUser) {
+                    speakerVolumeDirty = true
+                    speakerVolumeNeedsInitialCarSync = false
+                    sendCommand()
+                }
             }
-            override fun onStartTrackingTouch(sb: SeekBar?) = Unit
-            override fun onStopTrackingTouch(sb: SeekBar?) { saveSpeakerVolume(speakerVolume) }
+            override fun onStartTrackingTouch(sb: SeekBar?) {
+                speakerVolumeDragging = true
+            }
+            override fun onStopTrackingTouch(sb: SeekBar?) {
+                speakerVolumeDragging = false
+                saveSpeakerVolume(speakerVolume)
+            }
         })
 
         // Camera servo controls
@@ -517,6 +579,8 @@ class MainActivity : AppCompatActivity() {
 
         // Emergency stop
         btnStop.setOnClickListener { sendAction("stop") }
+        btnSpinLeft.setOnClickListener { sendAction("spin_left") }
+        btnSpinRight.setOnClickListener { sendAction("spin_right") }
         btnAudioToggle.setOnClickListener {
             if (audioPlaying) {
                 sendAudioCommand(playSong = "", stopAudio = true)
@@ -524,13 +588,15 @@ class MainActivity : AppCompatActivity() {
                 sendAudioCommand(playSong = "default", stopAudio = false)
             }
         }
+        btnAudioPrev.setOnClickListener { sendAudioCommand(playSong = PLAY_SONG_PREV, stopAudio = false) }
+        btnAudioNext.setOnClickListener { sendAudioCommand(playSong = PLAY_SONG_NEXT, stopAudio = false) }
 
         // Mode toggle
         btnManualMode.setOnClickListener {
-            if (swTrackingMode.isChecked) swTrackingMode.isChecked = false
+            saveTrackingMode(false)
         }
         btnAutoMode.setOnClickListener {
-            if (!swTrackingMode.isChecked) swTrackingMode.isChecked = true
+            saveTrackingMode(true)
         }
 
         // Navigation
@@ -552,14 +618,17 @@ class MainActivity : AppCompatActivity() {
             saveVoicePrompt(isChecked)
         }
         swTrackingMode.setOnCheckedChangeListener { _, isChecked ->
-            saveTrackingMode(isChecked)
-            updateModeButtons()
+            if (isChecked != trackingMode) {
+                saveTrackingMode(isChecked)
+            }
         }
 
         // Clear alerts
         btnClearAlertHistory.setOnClickListener {
-            alertHistory.clear()
-            alertCount = 0
+            synchronized(alertHistory) {
+                alertHistory.clear()
+                alertCount = 0
+            }
             lastAlarmSignature = ""
             tvAlertHistory.text = "-"
             tvAlertSummary.text = "0"
@@ -570,7 +639,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun applySettingsToUi() {
         swVoicePrompt.isChecked = voicePromptEnabled
-        swTrackingMode.isChecked = trackingMode
+        syncTrackingModeUi()
+    }
+
+    private fun syncTrackingModeUi() {
+        if (::swTrackingMode.isInitialized && swTrackingMode.isChecked != trackingMode) {
+            swTrackingMode.isChecked = trackingMode
+        }
         updateModeButtons()
     }
 
@@ -579,12 +654,12 @@ class MainActivity : AppCompatActivity() {
             btnAutoMode.setBackgroundResource(R.drawable.bg_chip_selected_dark)
             btnAutoMode.setTextColor(Color.parseColor("#F0ECE4"))
             btnManualMode.setBackgroundResource(R.drawable.bg_chip_default)
-            btnManualMode.setTextColor(Color.parseColor("#F0ECE4"))
+            btnManualMode.setTextColor(Color.parseColor("#A09888"))
         } else {
             btnManualMode.setBackgroundResource(R.drawable.bg_chip_selected_dark)
             btnManualMode.setTextColor(Color.parseColor("#F0ECE4"))
             btnAutoMode.setBackgroundResource(R.drawable.bg_chip_default)
-            btnAutoMode.setTextColor(Color.parseColor("#F0ECE4"))
+            btnAutoMode.setTextColor(Color.parseColor("#A09888"))
         }
     }
 
@@ -618,28 +693,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun sendAction(action: String) {
         if (trackingMode && action != "stop") {
-            swTrackingMode.isChecked = false
+            saveTrackingMode(false)
         }
         currentAction = action
-        sendCommand()
+        sendCommand(force = true)
     }
 
-    private fun sendVoiceCommand(command: String) {
-        val msg = JsonObject().apply {
-            addProperty("type", RaspbotProtocol.TYPE_APP_VOICE)
-            addProperty("source", "app")
-            addProperty("text", command)
-            addProperty("command", command)
-        }
-        if (sendTextPayload(gson.toJson(msg))) {
-            if (voicePromptEnabled) {
-                Toast.makeText(this, "已发送: $command", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
 
     private fun sendAudioCommand(playSong: String, stopAudio: Boolean) {
         val obj = JsonObject().apply {
+            addAuthToken(this)
             addProperty("source", "app")
             addProperty("action", "stop")
             addProperty("servo_angle", servoAngle1)
@@ -654,7 +717,13 @@ class MainActivity : AppCompatActivity() {
         sendJsonCommand(gson.toJson(obj))
         audioPlaying = !stopAudio
         updateAudioButton()
-        Toast.makeText(this, if (stopAudio) "已停止播放" else "已播放儿歌", Toast.LENGTH_SHORT).show()
+        val text = when {
+            stopAudio -> "已停止播放"
+            playSong == PLAY_SONG_NEXT -> "已切到下一首"
+            playSong == PLAY_SONG_PREV -> "已切到上一首"
+            else -> "已播放儿歌"
+        }
+        Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
     }
 
     private fun updateAudioButton() {
@@ -680,11 +749,29 @@ class MainActivity : AppCompatActivity() {
         reconnectAll()
     }
 
-    private fun sendCommand() {
-        if (trackingMode && !speakerVolumeDirty) {
+    private var lastSentCommandJson: String = ""
+    private var lastSentCommandAtMs: Long = 0L
+
+    private fun sendCommand(force: Boolean = false) {
+        val hadSpeakerVolumeDirty = speakerVolumeDirty
+        val cmd = buildJsonCommand()
+        val nowMs = SystemClock.elapsedRealtime()
+        if (!CommandSendPolicy.shouldSend(
+                force = force,
+                trackingMode = trackingMode,
+                speakerVolumeDirty = hadSpeakerVolumeDirty,
+                commandJson = cmd,
+                lastCommandJson = lastSentCommandJson,
+                action = currentAction,
+                speed = speed,
+                elapsedSinceLastSendMs = nowMs - lastSentCommandAtMs,
+            )
+        ) {
             return
         }
-        sendJsonCommand(buildJsonCommand())
+        lastSentCommandJson = cmd
+        lastSentCommandAtMs = nowMs
+        sendJsonCommand(cmd)
     }
 
     private fun sendJsonCommand(cmd: String) {
@@ -706,6 +793,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun buildJsonCommand(): String {
         val obj = JsonObject()
+        addAuthToken(obj)
         if (!trackingMode) {
             obj.addProperty("source", "app")
         }
@@ -721,6 +809,13 @@ class MainActivity : AppCompatActivity() {
         obj.addProperty("left_speed", speed)
         obj.addProperty("right_speed", speed)
         return gson.toJson(obj)
+    }
+
+    private fun addAuthToken(obj: JsonObject) {
+        val token = BuildConfig.RASPBOT_AUTH_TOKEN.trim()
+        if (token.isNotBlank()) {
+            obj.addProperty("auth_token", token)
+        }
     }
 
     private var sendCommandRunnable: Runnable? = null
@@ -760,6 +855,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun reconnectAll() {
         speakerVolumeDirty = true
+        speakerVolumeNeedsInitialCarSync = true
         webRtcClient.close()
         connectionClient.reconnect(currentHost)
     }
@@ -803,8 +899,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun appendTrendSample(series: ArrayDeque<TrendSample>, value: Float, nowMs: Long) {
-        series.addLast(TrendSample(nowMs, value))
-        pruneTrendSamples(series, nowMs)
+        synchronized(trendLock) {
+            series.addLast(TrendSample(nowMs, value))
+            pruneTrendSamples(series, nowMs)
+        }
     }
 
     private fun pruneTrendSamples(series: ArrayDeque<TrendSample>, nowMs: Long) {
@@ -815,11 +913,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun downsampleTrend(series: ArrayDeque<TrendSample>, nowMs: Long): List<Float> {
-        pruneTrendSamples(series, nowMs)
-        if (series.size <= TREND_RENDER_POINTS) {
-            return series.map { it.value }
+        val samples = synchronized(trendLock) {
+            pruneTrendSamples(series, nowMs)
+            series.toList()
         }
-        val samples = series.toList()
+        if (samples.size <= TREND_RENDER_POINTS) {
+            return samples.map { it.value }
+        }
         val bucketSize = (samples.size + TREND_RENDER_POINTS - 1) / TREND_RENDER_POINTS
         val result = ArrayList<Float>(TREND_RENDER_POINTS)
         var index = 0
@@ -837,32 +937,36 @@ class MainActivity : AppCompatActivity() {
         try {
             val obj = JsonParser.parseString(json).asJsonObject
             val nowMs = System.currentTimeMillis()
+            var trendChanged = false
 
             // temperature
             val temp = asFloatOrNull(obj.get("temp_c"))
-            if (temp != null) {
+            if (temp != null && temp != lastDispTemp) {
+                lastDispTemp = temp
                 mainHandler.post {
                     tvTemp.text = "${String.format("%.1f", temp)}"
                     tvHomeTemp.text = "${temp.toInt()}°"
                 }
                 appendTrendSample(trendTemp, temp, nowMs)
-                mainHandler.post { updateTrendChart() }
+                trendChanged = true
             }
 
             // light
             val lux = asIntOrNull(obj.get("light_lux"))
-            if (lux != null) {
+            if (lux != null && lux != lastDispLux) {
+                lastDispLux = lux
                 mainHandler.post {
                     tvLightLux.text = lux.toString()
                     tvHomeLight.text = lux.toString()
                 }
                 appendTrendSample(trendLight, lux.toFloat(), nowMs)
-                mainHandler.post { updateTrendChart() }
+                trendChanged = true
             }
 
             // smoke
             val smoke = asIntOrNull(obj.get("smoke"))
-            if (smoke != null) {
+            if (smoke != null && smoke != lastDispSmoke) {
+                lastDispSmoke = smoke
                 mainHandler.post {
                     tvSmoke.text = smoke.toString()
                     tvHomeSmoke.text = if (smoke > AlarmPolicy.SMOKE_ALARM_LEVEL) "异常" else smoke.toString()
@@ -873,24 +977,37 @@ class MainActivity : AppCompatActivity() {
             // distance
             val dist = asFloatOrNull(obj.get("dist_cm"))
             if (dist != null) {
-                mainHandler.post {
-                    tvDistance.text = "${dist.toInt()}cm"
-                    tvHomeDistance.text = dist.toInt().toString()
+                val distInt = dist.toInt()
+                if (distInt != lastDispDist) {
+                    lastDispDist = distInt
+                    mainHandler.post {
+                        tvDistance.text = "${distInt}cm"
+                        tvHomeDistance.text = distInt.toString()
+                    }
                 }
                 appendTrendSample(trendDistance, dist, nowMs)
+                trendChanged = true
+            }
+
+            if (trendChanged) {
                 mainHandler.post { updateTrendChart() }
             }
 
             // YL-40 AIN3 knob, not speaker dB.
             val volume = asIntOrNull(obj.get("volume"))
-            if (volume != null) {
-                mainHandler.post { tvVolume.text = "音量 ${volume}%" }
+            if (volume != null && volume != lastDispVolume) {
+                lastDispVolume = volume
+                mainHandler.post {
+                    syncSpeakerVolumeFromCar(volume)
+                    updateSpeakerVolumeUi()
+                }
             }
 
             // crying
             val crying = asBooleanOrNull(obj.get("crying"))
             val cryScore = asIntOrNull(obj.get("cry_score"))
-            if (crying != null) {
+            if (crying != null && crying != lastDispCrying) {
+                lastDispCrying = crying
                 mainHandler.post {
                     tvCry.text = if (crying) "检测" else "正常"
                     tvCry.setTextColor(if (crying) Color.parseColor("#D45A5A") else Color.parseColor("#7AB88A"))
@@ -902,7 +1019,8 @@ class MainActivity : AppCompatActivity() {
 
             // fps
             val fps = asIntOrNull(obj.get("fps"))
-            if (fps != null) {
+            if (fps != null && fps != lastDispFps) {
+                lastDispFps = fps
                 mainHandler.post {
                     tvFps.text = "帧率 ${fps}fps"
                     tvVideoStatus.text = "${fps} fps"
@@ -917,7 +1035,9 @@ class MainActivity : AppCompatActivity() {
                 lastAlarmSignature = ""
             }
 
-        } catch (_: Exception) { }
+        } catch (e: Exception) {
+            Log.w(TAG, "handleEnvJson error", e)
+        }
     }
 
     private fun recordAlarm(alarm: String) {
@@ -925,9 +1045,11 @@ class MainActivity : AppCompatActivity() {
         lastAlarmSignature = alarm
         val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
         val entry = "[$time] $alarm"
-        alertHistory.addLast(entry)
-        if (alertHistory.size > MAX_ALERT_HISTORY) alertHistory.removeFirst()
-        alertCount++
+        synchronized(alertHistory) {
+            alertHistory.addLast(entry)
+            if (alertHistory.size > MAX_ALERT_HISTORY) alertHistory.removeFirst()
+            alertCount++
+        }
         mainHandler.post {
             updateAlertBanner()
             tvAlertSummary.text = alertCount.toString()

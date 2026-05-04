@@ -4,7 +4,10 @@ import os
 import time
 from typing import Callable
 
-from protocol import CommandPacket, EnvPacket
+from logger_setup import setup_logger
+from protocol import CommandPacket, EnvPacket, is_cliff_track
+
+logger = setup_logger('raspbot.executor')
 
 
 class CommandExecutor:
@@ -51,12 +54,13 @@ class CommandExecutor:
 
         display_song_cmd = song_cmd
         if song_cmd and not is_sensor_event:
-            resolved_song = self.audio.resolve_song(song_cmd)
+            self.note_app_audio_volume(self.audio.volume)
+            resolved_song = self.audio.enqueue_song(song_cmd)
             if resolved_song:
                 display_song_cmd = resolved_song
-                self.audio.enqueue("song", resolved_song)
+                logger.info('enqueue song=%r cmd=%r', resolved_song, song_cmd)
             else:
-                print("[AUDIO] no default song found")
+                logger.warning('no default song found')
         if cmd.stop_audio:
             self.audio.clear()
 
@@ -66,9 +70,9 @@ class CommandExecutor:
         if cliff:
             if self._cliff_back_until <= now:
                 self._cliff_back_until = now + self.cliff_back_sec
-                print(
-                    f"[SAFE] cliff detected track={getattr(env_packet, 'track', [])} "
-                    f"-> backward {self.cliff_back_sec:.2f}s"
+                logger.warning(
+                    'cliff detected track=%s -> backward %.2fs',
+                    getattr(env_packet, 'track', []), self.cliff_back_sec,
                 )
             else:
                 self._cliff_back_until = max(self._cliff_back_until, now + self.cliff_back_sec)
@@ -78,7 +82,7 @@ class CommandExecutor:
             cmd.left_speed = self.cliff_back_speed
             cmd.right_speed = self.cliff_back_speed
         if action == "forward" and dist < 30:
-            print(f"[SAFE] block forward at dist={dist:.1f}cm (<30cm)")
+            logger.warning('block forward at dist=%.1fcm (<30cm)', dist)
             action = "stop"
         self.mark_command_seen(action, speed, cmd.left_speed, cmd.right_speed)
 
@@ -120,10 +124,4 @@ def _is_cliff_alarm(env_packet: EnvPacket) -> bool:
     alarm = str(getattr(env_packet, "alarm", "") or "").lower()
     if "cliff" in alarm or "track_empty" in alarm or "suspend" in alarm:
         return True
-    track = getattr(env_packet, "track", None)
-    if not isinstance(track, list) or len(track) < 4:
-        return False
-    try:
-        return all(int(v) == 0 for v in track[:4])
-    except (TypeError, ValueError):
-        return False
+    return is_cliff_track(getattr(env_packet, "track", None))

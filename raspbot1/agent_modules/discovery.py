@@ -7,6 +7,10 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from pc_modules.logger_setup import setup_logger
+
+logger = setup_logger('raspbot.discovery')
+
 
 DEFAULT_DISCOVERY_PORT = 5002
 
@@ -93,10 +97,10 @@ def main():
 
     car = discover_car(timeout=args.timeout, port=args.port, name=args.name)
     if not car:
-        print("not found")
+        logger.warning('not found')
         raise SystemExit(1)
-    print(json.dumps(car.raw, ensure_ascii=False))
-    print(car.uri)
+    logger.info('%s', json.dumps(car.raw, ensure_ascii=False))
+    logger.info('%s', car.uri)
 
 
 if __name__ == "__main__":

@@ -14,7 +14,6 @@ Default behavior:
 import argparse
 import asyncio
 import json
-import logging
 import os
 import threading
 import time
@@ -27,9 +26,10 @@ from urllib.request import Request, urlopen
 import websockets
 
 from .local_env import load_baidu_asr_config
+from .logger_setup import setup_logger
+from .protocol import _safe_ws_path
 
-logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
-logging.getLogger("websockets.asyncio.server").setLevel(logging.CRITICAL)
+logger = setup_logger('raspbot.asr')
 
 try:
     import audioop as _audioop
@@ -51,10 +51,66 @@ def _pcm16_rms(pcm16: bytes) -> float:
     return float(np.sqrt(np.mean(audio * audio)))
 
 
+# ── YAMNet-based cry detection ──────────────────────────────────────────────
+_yamnet_model = None
+_yamnet_ok = None  # tri-state: None=unchecked, True=loaded, False=unavailable
+
+# YAMNet AudioSet class indices for cry-related sounds
+_YAMNET_CRY_CLASSES = (20, 27)  # 20=Baby cry/infant cry, 27=Crying/sobbing
+_YAMNET_CRY_THRESHOLD = 0.25
+
+
+def _init_yamnet():
+    """Lazy-load YAMNet from TF Hub. Returns True on success."""
+    global _yamnet_model, _yamnet_ok
+    if _yamnet_model is not None:
+        return True
+    if _yamnet_ok is False:
+        return False
+    try:
+        import tensorflow_hub as hub  # type: ignore
+        _yamnet_model = hub.load('https://tfhub.dev/google/yamnet/1')
+        _yamnet_ok = True
+        logger.info('YAMNet loaded for cry detection (TF Hub)')
+        return True
+    except Exception as exc:
+        logger.warning('YAMNet unavailable, using FFT fallback: %s', exc)
+        _yamnet_ok = False
+        return False
+
+
+def _is_baby_cry_yamnet(pcm16: bytes, sample_rate: int = 16000,
+                        threshold: float = _YAMNET_CRY_THRESHOLD) -> tuple:
+    """Run YAMNet on PCM16 audio, return (is_cry, score in 0..1)."""
+    if not _init_yamnet():
+        return False, 0.0
+    if not pcm16 or len(pcm16) < 640:
+        return False, 0.0
+    try:
+        import numpy as np
+        audio = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
+
+        # YAMNet was trained on 0.975s at 16 kHz (15600 samples).
+        target = 15600
+        if len(audio) > target:
+            audio = audio[-target:]
+        elif len(audio) < target:
+            audio = np.pad(audio, (0, target - len(audio)))
+
+        scores, _, _ = _yamnet_model(audio)
+        # scores: (N_frames, 521) — average across time frames
+        frame_mean = scores.numpy().mean(axis=0)
+        score = float(max(frame_mean[i] for i in _YAMNET_CRY_CLASSES))
+        return score >= threshold, round(score, 3)
+    except Exception as exc:
+        logger.warning('YAMNet inference error: %s', exc)
+        return False, 0.0
+
+
 def _is_baby_cry_spectrum(pcm16: bytes, sample_rate: int = 16000,
                           cry_low: float = 250.0, cry_high: float = 650.0,
                           ratio_threshold: float = 0.35) -> tuple:
-    """Detect likely baby crying from energy ratio in the cry band."""
+    """FFT energy-ratio fallback when YAMNet is unavailable."""
     if not pcm16 or len(pcm16) < 640:
         return False, 0.0
     try:
@@ -66,7 +122,6 @@ def _is_baby_cry_spectrum(pcm16: bytes, sample_rate: int = 16000,
         fft = np.abs(np.fft.rfft(audio))
         freqs = np.fft.rfftfreq(len(audio), d=1.0 / sample_rate)
 
-        # Total useful-band energy, excluding DC and very high frequencies.
         valid = (freqs >= 50) & (freqs <= 4000)
         total_energy = np.sum(fft[valid] ** 2)
         if total_energy < 1e-6:
@@ -233,7 +288,7 @@ class BaiduRealtimeEngine:
         if result_type == "HEARTBEAT":
             return "", False
         if err_no != 0:
-            print(f"[ASR] baidu error err_no={err_no} err_msg={payload.get('err_msg', '')}")
+            logger.error('baidu error err_no=%s err_msg=%s', err_no, payload.get('err_msg', ''))
             return "", False
         text = str(payload.get("result") or "").strip()
         is_final = result_type == "FIN_TEXT"
@@ -248,10 +303,10 @@ def _build_t2s_converter():
         import opencc  # type: ignore
 
         cc = opencc.OpenCC("t2s")
-        print("[ASR] text normalize: opencc t2s enabled")
+        logger.info('text normalize: opencc t2s enabled')
         return cc.convert
     except Exception as exc:
-        print(f"[ASR] text normalize: builtin fallback ({exc})")
+        logger.warning('text normalize: builtin fallback (%s)', exc)
         table = str.maketrans({
             "進": "进",
             "後": "后",
@@ -277,28 +332,18 @@ def _build_t2s_converter():
         return lambda s: s.translate(table)
 
 
-def _safe_ws_path(ws) -> str:
-    path = getattr(ws, "path", None)
-    if path:
-        return path
-    req = getattr(ws, "request", None)
-    if req is not None:
-        return getattr(req, "path", "") or ""
-    return ""
-
-
 class AsrServer:
     def __init__(self, cfg: ServerConfig):
         self.cfg = cfg
         self.engine = BaiduRealtimeEngine(cfg)
-        print(f"[ASR] engine={self.engine.name} url={self.engine.base_url} dev_pid={self.engine.dev_pid}")
+        logger.info('engine=%s url=%s dev_pid=%s', self.engine.name, self.engine.base_url, self.engine.dev_pid)
         self.t2s = _build_t2s_converter()
         self.window_bytes = int(cfg.sample_rate * 2 * cfg.window_sec)
         self.step_bytes = max(320, int(cfg.sample_rate * 2 * cfg.step_sec))
         if self.step_bytes > self.window_bytes:
             self.step_bytes = self.window_bytes
         if _audioop is None:
-            print("[ASR] warn: audioop unavailable, using numpy RMS fallback")
+            logger.warning('audioop unavailable, using numpy RMS fallback')
 
     def normalize_text(self, text: str) -> str:
         raw = (text or "").strip()
@@ -314,25 +359,30 @@ class AsrServer:
         if not text:
             return
         now = time.strftime("%H:%M:%S")
-        print(f"[ASR][{now}] {text}")
+        logger.info('[%s] %s', now, text)
         if self.cfg.on_text is not None:
             try:
                 self.cfg.on_text(text)
             except Exception as exc:
-                print(f"[ASR] on_text callback error: {exc}")
+                logger.warning('on_text callback error: %s', exc)
 
     def emit_cry_if_needed(self, pcm16: bytes):
-        is_cry, cry_ratio = _is_baby_cry_spectrum(pcm16, self.cfg.sample_rate)
+        if _yamnet_ok is None:
+            _init_yamnet()
+        if _yamnet_ok:
+            is_cry, cry_ratio = _is_baby_cry_yamnet(pcm16, self.cfg.sample_rate)
+        else:
+            is_cry, cry_ratio = _is_baby_cry_spectrum(pcm16, self.cfg.sample_rate)
         if self.cfg.on_cry_state is not None:
             try:
                 self.cfg.on_cry_state(is_cry, cry_ratio)
             except Exception as exc:
-                print(f"[ASR] on_cry_state callback error: {exc}")
+                logger.warning('on_cry_state callback error: %s', exc)
         if is_cry and self.cfg.on_text is not None:
             try:
                 self.cfg.on_text(f"[CRY_DETECTED ratio={cry_ratio}]")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning('on_text callback error: %s', exc)
 
     async def _run_baidu_stream(self, q: asyncio.Queue, stop: asyncio.Event):
         assert isinstance(self.engine, BaiduRealtimeEngine)
@@ -350,7 +400,7 @@ class AsrServer:
             ping_timeout=10,
             max_size=None,
         ) as provider_ws:
-            print("[ASR] baidu stream connected")
+            logger.info('baidu stream connected')
             await provider_ws.send(self.engine.start_frame(self.cfg.sample_rate))
 
             async def send_audio():
@@ -390,7 +440,7 @@ class AsrServer:
                     try:
                         text, is_final = self.engine.parse_text(str(message))
                     except Exception as exc:
-                        print(f"[ASR] baidu parse error: {exc}")
+                        logger.warning('baidu parse error: %s', exc)
                         continue
                     if not text or text == last_text:
                         continue
@@ -428,12 +478,12 @@ class AsrServer:
     async def handle_client(self, ws):
         path = _safe_ws_path(ws)
         if self.cfg.path and path and path != self.cfg.path:
-            print(f"[ASR] reject path={path} expected={self.cfg.path}")
+            logger.warning('reject path=%s expected=%s', path, self.cfg.path)
             await ws.close(code=1008, reason="invalid path")
             return
 
         peer = getattr(ws, "remote_address", None)
-        print(f"[ASR] client connected: {peer} path={path or '/'}")
+        logger.info('client connected: %s path=%s', peer, path or '/')
 
         q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=200)
         stop = asyncio.Event()
@@ -462,7 +512,7 @@ class AsrServer:
             try:
                 await self._run_baidu_stream(q, stop)
             except Exception as exc:
-                print(f"[ASR] baidu stream error: {exc}")
+                logger.warning('baidu stream error: %s', exc)
 
         try:
             await asyncio.gather(recv_loop(), asr_loop())
@@ -471,16 +521,10 @@ class AsrServer:
         finally:
             dur = max(0.001, time.time() - start_ts)
             kbps = (total_bytes * 8 / dur) / 1000
-            print(
-                f"[ASR] client disconnected: {peer} bytes={total_bytes} "
-                f"drop={dropped} avg_kbps={kbps:.1f}"
-            )
+            logger.info('client disconnected: %s bytes=%s drop=%s avg_kbps=%.1f', peer, total_bytes, dropped, kbps)
 
     async def run(self, stop_event: Optional[threading.Event] = None):
-        print(
-            f"[ASR] listen ws://{self.cfg.host}:{self.cfg.port}{self.cfg.path} "
-            f"sr={self.cfg.sample_rate} window={self.cfg.window_sec}s step={self.cfg.step_sec}s"
-        )
+        logger.info('listen ws://%s:%s%s sr=%s window=%ss step=%ss', self.cfg.host, self.cfg.port, self.cfg.path, self.cfg.sample_rate, self.cfg.window_sec, self.cfg.step_sec)
         async with websockets.serve(
             self.handle_client,
             self.cfg.host,
@@ -494,41 +538,6 @@ class AsrServer:
             else:
                 while not stop_event.is_set():
                     await asyncio.sleep(0.2)
-
-
-class AsrServerRunner:
-    """Run AsrServer in a background thread."""
-
-    def __init__(self, cfg: ServerConfig):
-        self.cfg = cfg
-        self._server = AsrServer(cfg)
-        self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._error: Optional[Exception] = None
-
-    def _run(self):
-        try:
-            asyncio.run(self._server.run(stop_event=self._stop_event))
-        except Exception as exc:
-            self._error = exc
-            print(f"[ASR] server thread error: {exc}")
-
-    def start(self):
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop_event.clear()
-        self._error = None
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def stop(self, timeout: float = 3.0):
-        self._stop_event.set()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=timeout)
-
-    @property
-    def error(self) -> Optional[Exception]:
-        return self._error
 
 
 def parse_args():

@@ -12,8 +12,8 @@ Useful first parameters:
 | Symptom | Change |
 | --- | --- |
 | Servo follows too slowly | Increase `servo_kp_x` slightly |
-| Servo shakes around target | Decrease `servo_kp_x` or increase `servo_dead_zone` |
-| Servo overshoots | Decrease `servo_kp_x`, decrease `servo_out_max_x`, or increase `servo_kd_x` slightly |
+| Servo shakes around target | Decrease `servo_kp_x` or add a small `servo_kd_x` |
+| Servo overshoots | Decrease `servo_kp_x` or increase `servo_kd_x` slightly |
 | Body turns too fast | Decrease `body_speed_max` or `body_kp` |
 | Body starts turning too easily | Increase `body_dead_zone` |
 | Body does not turn enough | Increase `body_kp` or decrease `body_dead_zone` |
@@ -22,7 +22,7 @@ Useful first parameters:
 
 Safe tuning order:
 
-1. Keep `enable_motor_control=false`; tune `servo_kp_x`, `servo_kd_x`, `servo_out_max_x`.
+1. Keep `enable_motor_control=false`; tune `servo_kp_x` and `servo_kd_x`.
 2. Set `enable_motor_control=true`; tune `body_kp`, `body_dead_zone`, `body_speed_max`.
 3. Tune distance follow with `follow_dist_near`, `follow_dist_far`, and `follow_cooldown_sec`.
 

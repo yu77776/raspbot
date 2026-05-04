@@ -9,6 +9,19 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 from . import settings as cfg
+from .protocol import PLAY_SONG_NEXT, PLAY_SONG_PREV
+
+
+def _intent(action="stop", *, play_song="", stop_audio=False, audio_volume=None,
+            hold=1.2, one_shot=True):
+    return {
+        "action": action,
+        "play_song": play_song,
+        "stop_audio": stop_audio,
+        "audio_volume": audio_volume,
+        "hold": hold,
+        "one_shot": one_shot,
+    }
 
 
 def parse_voice_intent(text: str, hold_sec: float = 2.2) -> Optional[Dict[str, object]]:
@@ -31,23 +44,29 @@ def parse_voice_intent(text: str, hold_sec: float = 2.2) -> Optional[Dict[str, o
         "放音乐",
         "唱歌",
     ]
+    next_audio_keys = [
+        "下一首",
+        "下首",
+        "换一首",
+        "切歌",
+        "换歌",
+    ]
+    prev_audio_keys = [
+        "上一首",
+        "上首",
+        "前一首",
+    ]
     if any(k in cleaned for k in stop_audio_keys):
-        return {
-            "action": "stop",
-            "play_song": "",
-            "stop_audio": True,
-            "hold": 1.2,
-            "one_shot": True,
-        }
+        return _intent(stop_audio=True, audio_volume=None)
+
+    if any(k in cleaned for k in next_audio_keys):
+        return _intent(play_song=PLAY_SONG_NEXT, audio_volume=cfg.VOICE_DEFAULT_AUDIO_VOLUME)
+
+    if any(k in cleaned for k in prev_audio_keys):
+        return _intent(play_song=PLAY_SONG_PREV, audio_volume=cfg.VOICE_DEFAULT_AUDIO_VOLUME)
 
     if any(k in cleaned for k in play_audio_keys):
-        return {
-            "action": "stop",
-            "play_song": cfg.VOICE_DEFAULT_SONG_FILE,
-            "stop_audio": False,
-            "hold": 1.2,
-            "one_shot": True,
-        }
+        return _intent(play_song=cfg.VOICE_DEFAULT_SONG_FILE, audio_volume=cfg.VOICE_DEFAULT_AUDIO_VOLUME)
 
     action = None
     stop_keys = ["停止", "停下", "停车", "别动", "不要动", "等等"]
@@ -74,13 +93,22 @@ def parse_voice_intent(text: str, hold_sec: float = 2.2) -> Optional[Dict[str, o
     if not action:
         return None
 
-    return {
-        "action": action,
-        "play_song": "",
-        "stop_audio": False,
-        "hold": 1.5 if action == "stop" else hold_sec,
-        "one_shot": False,
-    }
+    return _intent(action=action, hold=1.5 if action == "stop" else hold_sec, one_shot=False)
+
+
+def merge_env_cry(payload: dict, cry_state) -> dict:
+    """Merge cry state into an env payload dict. Used by both app_gateway and webrtc_bridge."""
+    merged = dict(payload)
+    cry = cry_state.snapshot()
+    merged["crying"] = bool(cry.crying)
+    merged["cry_score"] = int(cry.cry_score)
+    base_alarm = str(merged.get("alarm", "") or "").strip()
+    if cry.alarm:
+        if not base_alarm:
+            merged["alarm"] = cry.alarm
+        elif cry.alarm not in base_alarm:
+            merged["alarm"] = f"{base_alarm}; {cry.alarm}"
+    return merged
 
 
 @dataclass(frozen=True)

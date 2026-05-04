@@ -4,7 +4,10 @@
 import threading
 import time
 
+from logger_setup import setup_logger
 from modules.base import ModuleBase
+
+logger = setup_logger('raspbot.ultrasonic')
 
 try:
     import RPi.GPIO as GPIO
@@ -35,9 +38,9 @@ class Ultrasonic(ModuleBase):
                 GPIO.setup(self.trig, GPIO.OUT)
                 GPIO.output(self.trig, GPIO.LOW)
                 self.enabled = True
-                print('[USONIC] initialized')
+                logger.info('initialized')
             except Exception as e:
-                print(f'[USONIC] init failed: {e}')
+                logger.warning('init failed: %s', e)
 
     def _measure_once(self):
         if not self.enabled:

@@ -1,14 +1,14 @@
 ﻿#!/usr/bin/env python3
 
-import logging
 import math
 import os
 import threading
 import time
 
+from logger_setup import setup_logger
 from modules.base import ModuleBase
 
-logger = logging.getLogger(__name__)
+logger = setup_logger('raspbot.pcf8591')
 
 try:
     import smbus2
@@ -46,13 +46,12 @@ class PCF8591(ModuleBase):
         self.battery_divider_ratio = float(os.getenv('RASPBOT_BATTERY_DIVIDER_RATIO', '2.0'))
         self.battery_min_v = float(os.getenv('RASPBOT_BATTERY_MIN_V', '6.4'))
         self.battery_max_v = float(os.getenv('RASPBOT_BATTERY_MAX_V', '8.4'))
-        print(
-            '[PCF8591] temp model ntc '
-            f'rfix={self.temp_series_ohm:.0f} r0={self.temp_nominal_ohm:.0f} '
-            f'beta={self.temp_beta:.0f}'
+        logger.info(
+            'temp model ntc rfix=%.0f r0=%.0f beta=%.0f',
+            self.temp_series_ohm, self.temp_nominal_ohm, self.temp_beta,
         )
-        print('[PCF8591] YL-40 channel map: AIN0=light AIN1=temp AIN2=aux/smoke AIN3=volume knob')
-        print('[PCF8591] battery is command-line only; not sent in realtime env packets')
+        logger.info('YL-40 channel map: AIN0=light AIN1=temp AIN2=aux/smoke AIN3=volume knob')
+        logger.debug('battery is command-line only; not sent in realtime env packets')
 
         self.lock = threading.Lock()
         self.bus_lock = threading.Lock()
@@ -65,7 +64,7 @@ class PCF8591(ModuleBase):
             try:
                 self.bus = smbus2.SMBus(1)
                 self.enabled = True
-                print('[PCF8591] OK')
+                logger.info('OK')
             except Exception as e:
                 logger.error('[PCF8591] FAIL: %s', e)
 
@@ -160,8 +159,17 @@ class PCF8591(ModuleBase):
         return result
 
     def _run(self):
+        error_count = 0
         while not self.stop_event.is_set():
-            channels = [self._read(ch) for ch in range(4)]
+            try:
+                channels = [self._read(ch) for ch in range(4)]
+            except Exception as e:
+                error_count += 1
+                if error_count == 1 or error_count % 20 == 0:
+                    logger.warning('I2C read error: %s', e)
+                time.sleep(0.5)
+                continue
+            error_count = 0
             light = channels[0]
             temp = channels[1]
             smoke = channels[2]

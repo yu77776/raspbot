@@ -14,6 +14,17 @@ This document is the shared contract for App, PC, and car messages. Keep code ch
 
 Commands are sent inside `0x02 + json`.
 
+Network-facing WebSocket endpoints require `RASPBOT_AUTH_TOKEN` unless they are
+explicitly allowed to run insecure with `RASPBOT_ALLOW_INSECURE=1`. Local
+WebSocket clients authenticate with `?token=<token>` in the URL. WebRTC command
+DataChannel messages include `auth_token` in the JSON envelope; the PC bridge
+validates and strips it before forwarding to the car.
+
+`raspbot_agent.py` auto-generates a local `RASPBOT_AUTH_TOKEN` when neither a
+token nor the explicit insecure escape hatch is configured, persists it in
+`raspbot1/raspbot.local.json`, syncs it into `RaspbotApp/local.properties`, and
+passes it to the remote car process.
+
 | Field | Type | Range / Values | Notes |
 | --- | --- | --- | --- |
 | `source` | string | `app`, `pc`, omitted | `app` activates car-side manual override. PC tracking commands should omit it or use `pc`. |
@@ -31,6 +42,7 @@ Commands are sent inside `0x02 + json`.
 | `remote_crying` / `crying` | bool | | PC-derived cry state forwarded to the car/app. |
 | `remote_cry_score` / `cry_score` | int | `0..100` | PC-derived cry score. |
 | `remote_alarm` / `alarm` | string | token list | PC-derived alarm tokens. |
+| `auth_token` | string | local secret | App/WebRTC authentication envelope; PC strips before forwarding. |
 
 ## Environment JSON
 

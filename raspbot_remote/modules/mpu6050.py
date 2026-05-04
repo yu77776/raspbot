@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """MPU6050 IMU module with Madgwick quaternion fusion."""
+import json
 import math
+import os
 import threading
 import time
 from collections import deque
 
+from logger_setup import setup_logger
 from modules.base import ModuleBase
+
+logger = setup_logger('raspbot.imu')
 
 try:
     import smbus2
@@ -34,6 +39,8 @@ class MPU6050(ModuleBase):
         auto_calibrate=True,
         calibrate_timeout=20.0,
         calibrate_window=2.5,
+        calibration_path=None,
+        warm_calibrate_timeout=4.0,
     ):
         self.addr = int(addr)
         self.bus_id = int(bus_id)
@@ -43,6 +50,13 @@ class MPU6050(ModuleBase):
         self.auto_calibrate = bool(auto_calibrate)
         self.calibrate_timeout = float(calibrate_timeout)
         self.calibrate_window = float(calibrate_window)
+        self.warm_calibrate_timeout = float(warm_calibrate_timeout)
+        if calibration_path is None:
+            calibration_path = os.getenv(
+                'RASPBOT_IMU_CALIBRATION_PATH',
+                os.path.join(os.path.dirname(os.path.dirname(__file__)), 'imu_calibration.local.json'),
+            )
+        self.calibration_path = calibration_path
 
         self.bus = None
         self.enabled = False
@@ -72,19 +86,92 @@ class MPU6050(ModuleBase):
 
         self._open()
 
+    def _bias_payload_valid(self, payload):
+        if not isinstance(payload, dict):
+            return False
+        if payload.get('sensor') != 'MPU6050':
+            return False
+        try:
+            addr = int(payload.get('addr', -1))
+            bus_id = int(payload.get('bus_id', -1))
+        except (TypeError, ValueError):
+            return False
+        if addr != self.addr or bus_id != self.bus_id:
+            return False
+        for name in ('gyro_bias_dps', 'accel_bias_g'):
+            values = payload.get(name)
+            if not isinstance(values, list) or len(values) != 3:
+                return False
+            try:
+                parsed = [float(v) for v in values]
+            except (TypeError, ValueError):
+                return False
+            if not all(math.isfinite(v) for v in parsed):
+                return False
+        return True
+
+    def _load_calibration(self):
+        if not self.calibration_path:
+            return False
+        try:
+            with open(self.calibration_path, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+        except FileNotFoundError:
+            return False
+        except Exception as e:
+            logger.warning('calibration load failed: %s', e)
+            return False
+
+        if not self._bias_payload_valid(payload):
+            logger.warning('ignore invalid calibration file: %s', self.calibration_path)
+            return False
+
+        self.gyro_bias_dps = [float(v) for v in payload['gyro_bias_dps']]
+        self.accel_bias_g = [float(v) for v in payload['accel_bias_g']]
+        self.calibrated = True
+        self.data['calibrated'] = True
+        self._reset_attitude_from_current_gravity()
+        logger.info('loaded calibration: %s', self.calibration_path)
+        return True
+
+    def _save_calibration(self):
+        if not self.calibration_path:
+            return
+        payload = {
+            'sensor': 'MPU6050',
+            'addr': self.addr,
+            'bus_id': self.bus_id,
+            'sample_hz': self.sample_hz,
+            'gyro_bias_dps': [round(v, 6) for v in self.gyro_bias_dps],
+            'accel_bias_g': [round(v, 6) for v in self.accel_bias_g],
+            'saved_at': time.time(),
+        }
+        try:
+            directory = os.path.dirname(os.path.abspath(self.calibration_path))
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            tmp_path = self.calibration_path + '.tmp'
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, indent=2, sort_keys=True)
+                f.write('\n')
+            os.replace(tmp_path, self.calibration_path)
+            logger.info('saved calibration: %s', self.calibration_path)
+        except Exception as e:
+            logger.warning('calibration save failed: %s', e)
+
     def _open(self):
         if not HAS_I2C:
-            print('[IMU] smbus2 missing, disabled')
+            logger.warning('smbus2 missing, disabled')
             return
         try:
             self.bus = smbus2.SMBus(self.bus_id)
             self._init_chip()
             self.enabled = True
-            print(f'[IMU] init ok addr=0x{self.addr:02X} bus={self.bus_id}')
+            logger.info('init ok addr=0x%02X bus=%s', self.addr, self.bus_id)
         except Exception as e:
             self.enabled = False
             self.bus = None
-            print(f'[IMU] init fail: {e}')
+            logger.error('init fail: %s', e)
 
     def _init_chip(self):
         # Wake chip, 1kHz/(1+9)=100Hz, low-pass ~42Hz, gyro +/-250dps, accel +/-2g
@@ -193,14 +280,36 @@ class MPU6050(ModuleBase):
         z = cr * cp * sy - sr * sp * cy
         return [w, x, y, z]
 
-    def calibrate(self, timeout_s=None):
+    def _reset_attitude_from_current_gravity(self):
+        try:
+            u = self._read_units()
+        except Exception:
+            return False
+        ax = u['ax_g'] - self.accel_bias_g[0]
+        ay = u['ay_g'] - self.accel_bias_g[1]
+        az = u['az_g'] - self.accel_bias_g[2]
+        norm = math.sqrt(ax * ax + ay * ay + az * az)
+        if norm <= 1e-9:
+            return False
+        ax /= norm
+        ay /= norm
+        az /= norm
+        roll0 = math.atan2(ay, az)
+        pitch0 = math.atan2(-ax, math.sqrt(ay * ay + az * az))
+        self.q = self._quat_from_rpy(roll0, pitch0, 0.0)
+        return True
+
+    def calibrate(self, timeout_s=None, accept_timeout=True):
         if not self.enabled:
             return False
         timeout_s = self.calibrate_timeout if timeout_s is None else float(timeout_s)
-        print('[IMU] keep still and flat for auto calibration...')
+        logger.info('keep still and flat for auto calibration...')
         samples, ok = self._collect_window(timeout_s)
         if not samples:
-            print('[IMU] calibration failed: no samples')
+            logger.warning('calibration failed: no samples')
+            return False
+        if not ok and not accept_timeout:
+            logger.warning('calibration skipped: no stable still/flat window')
             return False
 
         mean_ax = self._mean([s['ax_g'] for s in samples])
@@ -223,11 +332,12 @@ class MPU6050(ModuleBase):
         self.q = self._quat_from_rpy(roll0, pitch0, 0.0)
 
         self.calibrated = True
+        self._save_calibration()
         state = 'ok' if ok else 'timeout(use latest window)'
-        print(
-            f'[IMU] calibration {state} '
-            f'gyro_bias(dps)=({mean_gx:.3f},{mean_gy:.3f},{mean_gz:.3f}) '
-            f'acc_bias(g)=({self.accel_bias_g[0]:.4f},{self.accel_bias_g[1]:.4f},{self.accel_bias_g[2]:.4f})'
+        logger.info(
+            'calibration %s gyro_bias(dps)=(%.3f,%.3f,%.3f) acc_bias(g)=(%.4f,%.4f,%.4f)',
+            state, mean_gx, mean_gy, mean_gz,
+            self.accel_bias_g[0], self.accel_bias_g[1], self.accel_bias_g[2],
         )
         return ok
 
@@ -328,7 +438,7 @@ class MPU6050(ModuleBase):
                     self.last_error = str(e)
                     self.data['healthy'] = False
                 if error_count == 1 or error_count % 20 == 0:
-                    print(f'[IMU] read/update error: {e}')
+                    logger.warning('read/update error: %s', e)
 
             spend = time.monotonic() - t0
             time.sleep(max(0.0, self.sample_dt - spend))
@@ -339,7 +449,11 @@ class MPU6050(ModuleBase):
         if not self.enabled:
             return False
         if self.auto_calibrate and not self.calibrated:
-            self.calibrate(self.calibrate_timeout)
+            loaded = self._load_calibration()
+            timeout_s = self.warm_calibrate_timeout if loaded else self.calibrate_timeout
+            ok = self.calibrate(timeout_s, accept_timeout=not loaded)
+            if loaded and not ok:
+                logger.warning('warm calibration not confirmed; keep cached bias')
         return True
 
     def get_data(self):
@@ -363,7 +477,7 @@ class MPU6050(ModuleBase):
 if __name__ == '__main__':
     imu = MPU6050(addr=0x68, sample_hz=100, beta=0.08, auto_calibrate=True)
     if not imu.enabled:
-        print('[IMU] not enabled')
+        logger.warning('not enabled')
     else:
         imu.start()
         try:

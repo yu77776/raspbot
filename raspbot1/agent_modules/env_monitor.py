@@ -8,7 +8,11 @@ import time
 import websockets
 
 from pc_modules import settings as cfg
+from pc_modules.logger_setup import setup_logger
+from pc_modules.protocol import append_auth_token_to_uri, resolve_auth_token
 from .discovery import DEFAULT_DISCOVERY_PORT, discover_car
+
+logger = setup_logger('raspbot.monitor')
 
 
 def _fmt_float(value, default=0.0, digits=1):
@@ -42,7 +46,7 @@ async def monitor_env(uri: str, print_interval: float = 0.5, reconnect_delay: fl
     last_print = 0.0
     while True:
         try:
-            print(f"[MON] connecting {uri}", flush=True)
+            logger.info('connecting %s', uri)
             async with websockets.connect(
                 uri,
                 max_size=10 * 1024 * 1024,
@@ -52,7 +56,7 @@ async def monitor_env(uri: str, print_interval: float = 0.5, reconnect_delay: fl
                 close_timeout=1,
                 proxy=None,
             ) as ws:
-                print("[MON] connected", flush=True)
+                logger.info('connected')
                 async for message in ws:
                     if not isinstance(message, (bytes, bytearray)) or not message:
                         continue
@@ -61,18 +65,18 @@ async def monitor_env(uri: str, print_interval: float = 0.5, reconnect_delay: fl
                     try:
                         env = json.loads(message[1:].decode("utf-8"))
                     except Exception as exc:
-                        print(f"[MON] bad env packet: {exc}", flush=True)
+                        logger.warning('bad env packet: %s', exc)
                         continue
                     now = time.monotonic()
                     if now - last_print >= max(0.1, float(print_interval)):
                         last_print = now
-                        print(f"[MON] {format_env_line(env)}", flush=True)
+                        logger.info('%s', format_env_line(env))
         except asyncio.CancelledError:
             raise
         except KeyboardInterrupt:
             raise
         except Exception as exc:
-            print(f"[MON] disconnected: {exc}; retry in {reconnect_delay:.1f}s", flush=True)
+            logger.warning('disconnected: %s; retry in %.1fs', exc, reconnect_delay)
             await asyncio.sleep(reconnect_delay)
 
 
@@ -82,6 +86,7 @@ def parse_args():
     parser.add_argument("--port", type=int, default=cfg.DEFAULT_CAR_PORT)
     parser.add_argument("--uri", default="", help="Full websocket URI, overrides --host/--port.")
     parser.add_argument("--interval", type=float, default=0.5, help="Print interval in seconds.")
+    parser.add_argument("--auth-token", default="", help="WebSocket auth token. Defaults to RASPBOT_AUTH_TOKEN.")
     parser.add_argument("--discover-timeout", type=float, default=5.0)
     parser.add_argument("--discover-port", type=int, default=DEFAULT_DISCOVERY_PORT)
     return parser.parse_args()
@@ -102,10 +107,12 @@ def main():
             port = car.port
         uri = f"ws://{host}:{port}"
 
+    uri = append_auth_token_to_uri(uri, resolve_auth_token(args.auth_token))
+
     try:
         asyncio.run(monitor_env(uri, print_interval=args.interval))
     except KeyboardInterrupt:
-        print("[MON] stopped", flush=True)
+        logger.info('stopped')
 
 
 if __name__ == "__main__":

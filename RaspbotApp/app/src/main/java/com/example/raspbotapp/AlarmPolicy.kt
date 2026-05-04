@@ -69,6 +69,7 @@ object AlarmPolicy {
             lower == "cry" || lower.startsWith("cry") -> "检测到哭声"
             lower.contains("dist") || lower.contains("close") -> "距离过近"
             lower.contains("track") || lower.contains("cliff") || lower.contains("suspend") -> "疑似悬空"
+            lower.contains("battery") || lower.contains("volt") -> "电池电量低"
             else -> token
         }
     }
