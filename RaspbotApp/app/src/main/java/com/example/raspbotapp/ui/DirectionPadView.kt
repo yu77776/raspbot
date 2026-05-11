@@ -46,9 +46,12 @@ class DirectionPadView @JvmOverloads constructor(
         isFakeBoldText = true
     }
 
+    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
     private var lastAction = "stop"
     private var knobX = 0f
     private var knobY = 0f
+    private var downTime = 0L
     private var callback: ((String) -> Unit)? = null
 
     fun setOnDirectionActionListener(listener: (String) -> Unit) {
@@ -74,16 +77,12 @@ class DirectionPadView @JvmOverloads constructor(
         canvas.drawLine(cx - radius * 0.72f, cy, cx + radius * 0.72f, cy, ringPaint)
         canvas.drawLine(cx, cy - radius * 0.72f, cx, cy + radius * 0.72f, ringPaint)
 
-        val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            shader = RadialGradient(
-                knobX,
-                knobY,
-                knobRadius * 2.8f,
-                Color.parseColor("#33D4A574"),
-                Color.TRANSPARENT,
-                Shader.TileMode.CLAMP
-            )
-        }
+        glowPaint.shader = RadialGradient(
+            knobX, knobY, knobRadius * 2.8f,
+            Color.parseColor("#33D4A574"),
+            Color.TRANSPARENT,
+            Shader.TileMode.CLAMP
+        )
         canvas.drawCircle(knobX, knobY, knobRadius * 2.8f, glowPaint)
         canvas.drawCircle(knobX, knobY, knobRadius, knobPaint)
         canvas.drawCircle(knobX, knobY, knobRadius * 0.45f, centerPaint)
@@ -93,11 +92,22 @@ class DirectionPadView @JvmOverloads constructor(
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+            MotionEvent.ACTION_DOWN -> {
                 parent?.requestDisallowInterceptTouchEvent(true)
+                downTime = System.currentTimeMillis()
                 updateKnob(event.x, event.y)
                 val action = resolveAction()
                 emitAction(action)
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                parent?.requestDisallowInterceptTouchEvent(true)
+                updateKnob(event.x, event.y)
+                val action = resolveAction()
+                // Require > 50ms hold before issuing a new direction to prevent accidental taps
+                if (System.currentTimeMillis() - downTime > 50L) {
+                    emitAction(action)
+                }
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {

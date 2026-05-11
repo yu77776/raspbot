@@ -15,6 +15,7 @@ from .motion_controller import MotionController, MotionState
 from .env_logger import flush_csv, log_env
 from .packets import CommandPacket, EnvPacket
 from .voice_cry_bridge import parse_voice_intent
+from .dialogue_engine import DialogueEngine
 logger = setup_logger('raspbot.client')
 
 class PCClientWS:
@@ -63,6 +64,12 @@ class PCClientWS:
         self._voice_stop_audio = False
         self._voice_audio_volume = None
         self._voice_one_shot_pending = False
+        self._voice_reply_text = ''
+        self._voice_tts_text = ''
+        self._voice_intent_type = ''
+        self._asr_echo_suppress_until = 0.0
+        self._asr_echo_suppress_sec = float(os.getenv('RASPBOT_ASR_ECHO_SUPPRESS_SEC', '6.0'))
+        self.dialogue = DialogueEngine()
         self._last_env_debug_ts = 0.0
         self._last_env_parse_error_ts = 0.0
 
@@ -76,8 +83,26 @@ class PCClientWS:
 
 
     def on_asr_text(self, text: str):
+        now = time.monotonic()
+        if now < self._asr_echo_suppress_until:
+            logger.info("ignore ASR during TTS echo suppression: %s", text)
+            return
         intent = self._asr_text_to_intent(text)
         if not intent:
+            reply = self.dialogue.respond(text)
+            if reply is not None:
+                with self._voice_lock:
+                    self._voice_action = 'stop'
+                    self._voice_until = time.monotonic() + 5.0
+                    self._voice_play_song = ''
+                    self._voice_stop_audio = False
+                    self._voice_audio_volume = None
+                    self._voice_one_shot_pending = True
+                    self._voice_reply_text = reply.text
+                    self._voice_tts_text = reply.text
+                    self._voice_intent_type = 'chat'
+                    self._asr_echo_suppress_until = self._tts_echo_suppress_deadline(reply.text)
+                logger.info("text=%s -> chat reply=%s", text, reply.text)
             return
         with self._voice_lock:
             self._voice_action = intent['action']
@@ -86,10 +111,21 @@ class PCClientWS:
             self._voice_stop_audio = bool(intent['stop_audio'])
             self._voice_audio_volume = intent.get('audio_volume')
             self._voice_one_shot_pending = bool(intent['one_shot'])
+            self._voice_reply_text = ''
+            self._voice_tts_text = ''
+            self._voice_intent_type = ''
         logger.info(
-            "text=%r -> action=%s play_song=%r stop_audio=%s",
+            "text=%s -> action=%s play_song=%s stop_audio=%s",
             text, intent['action'], intent['play_song'], intent['stop_audio'],
         )
+
+
+    def _tts_echo_suppress_deadline(self, text: str) -> float:
+        # Half-duplex guard: the car speaker sits close to the mic, so TTS is
+        # often re-recognized as fresh user speech. Prefer a conservative window.
+        text_len = len(str(text or '').strip())
+        estimate = max(self._asr_echo_suppress_sec, 2.0 + text_len * 0.22)
+        return time.monotonic() + estimate
 
 
     def _build_voice_command(self):
@@ -103,10 +139,16 @@ class PCClientWS:
             stop_audio = self._voice_stop_audio
             audio_volume = self._voice_audio_volume
             one_shot = self._voice_one_shot_pending
+            reply_text = self._voice_reply_text
+            tts_text = self._voice_tts_text
+            intent_type = self._voice_intent_type
         cmd = self.last_command.clone()
         cmd.detecting = False
         cmd.play_song = play_song
         cmd.stop_audio = stop_audio
+        cmd.reply_text = reply_text
+        cmd.tts_text = tts_text
+        cmd.intent_type = intent_type
         if audio_volume is not None:
             cmd.audio_volume = int(audio_volume)
         if not cfg.ENABLE_MOTOR_CONTROL:
@@ -130,10 +172,13 @@ class PCClientWS:
             cmd.right_speed,
             cmd.play_song,
             cmd.stop_audio,
+            cmd.reply_text,
+            cmd.tts_text,
+            cmd.intent_type,
         )
         if self._voice_last_sent != sent_key:
             logger.info(
-                'send action=%s speed=%s song=%r stop_audio=%s',
+                'send action=%s speed=%s song=%s stop_audio=%s',
                 cmd.action, cmd.speed, cmd.play_song, cmd.stop_audio,
             )
             self._voice_last_sent = sent_key
@@ -145,6 +190,9 @@ class PCClientWS:
                 self._voice_stop_audio = False
                 self._voice_audio_volume = None
                 self._voice_one_shot_pending = False
+                self._voice_reply_text = ''
+                self._voice_tts_text = ''
+                self._voice_intent_type = ''
         return cmd
 
 
@@ -369,7 +417,6 @@ class PCClientWS:
                     logger.info('resize incoming %sx%s -> %sx%s', w, h, cfg.FRAME_W, cfg.FRAME_H)
                     self._warned_resolution_mismatch = True
                 frame = cv2.resize(frame, (cfg.FRAME_W, cfg.FRAME_H), interpolation=cv2.INTER_LINEAR)
-            self._latest_frame = frame
             self.frame_count += 1
             # Keep YOLO inference on the incoming video stream.
             if self.frame_count % cfg.INFER_EVERY_N == 0:

@@ -44,6 +44,9 @@ class CommandPacket:
     remote_crying: Optional[bool] = None
     remote_cry_score: Optional[int] = None
     remote_alarm: Optional[str] = None
+    reply_text: str = ''
+    tts_text: str = ''
+    intent_type: str = ''
 
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]):
@@ -70,6 +73,9 @@ class CommandPacket:
             remote_crying=None if crying_payload is None else _as_bool(crying_payload),
             remote_cry_score=None if cry_score_payload is None else _clamp_int(cry_score_payload, 0, 100, 0),
             remote_alarm=None if alarm_payload is None else str(alarm_payload).strip(),
+            reply_text=str(payload.get("reply_text", "") or "").strip(),
+            tts_text=str(payload.get("tts_text", "") or "").strip(),
+            intent_type=str(payload.get("intent_type", "") or "").strip(),
         )
 
     def to_wire_dict(self) -> Dict[str, Any]:
@@ -98,6 +104,12 @@ class CommandPacket:
             payload['remote_cry_score'] = self.remote_cry_score
         if self.remote_alarm is not None:
             payload['remote_alarm'] = self.remote_alarm
+        if self.reply_text:
+            payload['reply_text'] = self.reply_text
+        if self.tts_text:
+            payload['tts_text'] = self.tts_text
+        if self.intent_type:
+            payload['intent_type'] = self.intent_type
         return payload
 
     def clone(self):

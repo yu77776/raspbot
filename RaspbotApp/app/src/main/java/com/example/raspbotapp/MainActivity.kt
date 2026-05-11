@@ -188,13 +188,13 @@ class MainActivity : AppCompatActivity() {
     private val trendLock = Any()
 
     // Cached env display values to skip redundant UI posts
-    private var lastDispTemp: Float = Float.NaN
-    private var lastDispLux: Int = -1
-    private var lastDispSmoke: Int = -1
-    private var lastDispDist: Int = -1
-    private var lastDispVolume: Int = -1
-    private var lastDispCrying: Boolean? = null
-    private var lastDispFps: Int = -1
+    @Volatile private var lastDispTemp: Float = Float.NaN
+    @Volatile private var lastDispLux: Int = -1
+    @Volatile private var lastDispSmoke: Int = -1
+    @Volatile private var lastDispDist: Int = -1
+    @Volatile private var lastDispVolume: Int = -1
+    @Volatile private var lastDispCrying: Boolean? = null
+    @Volatile private var lastDispFps: Int = -1
 
     private lateinit var webRtcClient: RaspbotWebRtcClient
     private lateinit var connectionClient: RaspbotConnectionClient
@@ -993,7 +993,7 @@ class MainActivity : AppCompatActivity() {
                 mainHandler.post { updateTrendChart() }
             }
 
-            // YL-40 AIN3 knob, not speaker dB.
+            // Car-side applied speaker volume.
             val volume = asIntOrNull(obj.get("volume"))
             if (volume != null && volume != lastDispVolume) {
                 lastDispVolume = volume

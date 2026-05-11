@@ -42,7 +42,7 @@ class Motor:
         self.car = YB_Pcb_Car() if HAS_CAR else None
         self.last_servo1 = 90
         self.last_servo2 = 90
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.dead_band = 1
         self.closed_loop_enabled = as_bool(os.getenv('RASPBOT_MOTION_CLOSED_LOOP', '1'))
         self.heading_kp = float(os.getenv('RASPBOT_HEADING_KP', '1.8'))
@@ -225,25 +225,26 @@ class Motor:
             self._last_action = 'stop'
 
     def execute_motion(self, action, speed, left_speed=None, right_speed=None, env_packet=None):
-        action = str(action or 'stop')
-        speed = int(max(0, min(255, int(speed))))
-        left = int(max(0, min(255, int(speed if left_speed is None else left_speed))))
-        right = int(max(0, min(255, int(speed if right_speed is None else right_speed))))
+        with self.lock:
+            action = str(action or 'stop')
+            speed = int(max(0, min(255, int(speed))))
+            left = int(max(0, min(255, int(speed if left_speed is None else left_speed))))
+            right = int(max(0, min(255, int(speed if right_speed is None else right_speed))))
 
-        if action == 'forward':
-            self.forward(left, right, env_packet=env_packet)
-        elif action == 'backward':
-            self.backward(left, right, env_packet=env_packet)
-        elif action == 'spin_left':
-            self.spin_left(speed, env_packet=env_packet)
-        elif action == 'spin_right':
-            self.spin_right(speed, env_packet=env_packet)
-        elif action == 'left':
-            self.left(speed)
-        elif action == 'right':
-            self.right(speed)
-        else:
-            self.stop()
+            if action == 'forward':
+                self.forward(left, right, env_packet=env_packet)
+            elif action == 'backward':
+                self.backward(left, right, env_packet=env_packet)
+            elif action == 'spin_left':
+                self.spin_left(speed, env_packet=env_packet)
+            elif action == 'spin_right':
+                self.spin_right(speed, env_packet=env_packet)
+            elif action == 'left':
+                self.left(speed)
+            elif action == 'right':
+                self.right(speed)
+            else:
+                self.stop()
 
 
 if __name__ == '__main__':

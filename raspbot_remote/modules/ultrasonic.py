@@ -87,6 +87,13 @@ class Ultrasonic(ModuleBase):
         with self.lock:
             return self.distance
 
+    def _after_stop(self):
+        if HAS_GPIO and self.enabled:
+            try:
+                GPIO.cleanup([self.trig, self.echo])
+            except Exception:
+                pass
+
 
 if __name__ == '__main__':
     print('Testing ultrasonic module...')

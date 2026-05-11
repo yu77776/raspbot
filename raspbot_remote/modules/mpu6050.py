@@ -393,6 +393,17 @@ class MPU6050(ModuleBase):
         return math.degrees(roll), math.degrees(pitch), math.degrees(yaw)
 
     def _run(self):
+        # Calibrate in background so start() returns without blocking.
+        if self.auto_calibrate:
+            if not self.calibrated:
+                logger.info('starting background calibration (no cached bias)')
+                self.calibrate(self.calibrate_timeout, accept_timeout=True)
+            else:
+                logger.info('starting background warm calibration')
+                ok = self.calibrate(self.warm_calibrate_timeout, accept_timeout=True)
+                if not ok:
+                    logger.info('warm calibration skipped (no stable window); using cached bias')
+
         error_count = 0
         prev_t = time.monotonic()
         while not self.stop_event.is_set():
@@ -449,11 +460,7 @@ class MPU6050(ModuleBase):
         if not self.enabled:
             return False
         if self.auto_calibrate and not self.calibrated:
-            loaded = self._load_calibration()
-            timeout_s = self.warm_calibrate_timeout if loaded else self.calibrate_timeout
-            ok = self.calibrate(timeout_s, accept_timeout=not loaded)
-            if loaded and not ok:
-                logger.warning('warm calibration not confirmed; keep cached bias')
+            self._load_calibration()
         return True
 
     def get_data(self):
@@ -472,6 +479,14 @@ class MPU6050(ModuleBase):
         with self.lock:
             ts = self.last_ok_ts
         return ts > 0 and (time.time() - ts) <= float(timeout_s)
+
+    def _after_stop(self):
+        if self.bus is not None:
+            try:
+                self.bus.close()
+            except Exception as exc:
+                logger.warning('I2C bus close error: %s', exc)
+            self.bus = None
 
 
 if __name__ == '__main__':

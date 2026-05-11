@@ -118,6 +118,9 @@ class CommandPacket:
     remote_crying: Optional[bool] = None
     remote_cry_score: Optional[int] = None
     remote_alarm: Optional[str] = None
+    reply_text: str = ""
+    tts_text: str = ""
+    intent_type: str = ""
 
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]):
@@ -143,6 +146,9 @@ class CommandPacket:
             remote_crying=None if crying_payload is None else as_bool(crying_payload),
             remote_cry_score=None if cry_score_payload is None else clamp_int(cry_score_payload, 0, 100, 0),
             remote_alarm=remote_alarm,
+            reply_text=str(payload.get("reply_text", "") or "").strip(),
+            tts_text=str(payload.get("tts_text", "") or "").strip(),
+            intent_type=str(payload.get("intent_type", "") or "").strip(),
         )
 
 
@@ -181,6 +187,20 @@ class EnvPacket:
     alarm: str
     imu: Optional[ImuPacket]
     fps: int
+
+    def __post_init__(self):
+        if not isinstance(self.track, list) or len(self.track) < 4:
+            object.__setattr__(self, 'track', [1, 1, 1, 1])
+        else:
+            normalized = []
+            for v in self.track[:4]:
+                try:
+                    normalized.append(int(v))
+                except (TypeError, ValueError):
+                    normalized.append(1)
+            object.__setattr__(self, 'track', normalized)
+        if not isinstance(self.alarm, str):
+            object.__setattr__(self, 'alarm', str(self.alarm or ''))
 
     def to_dict(self) -> Dict[str, Any]:
         return {

@@ -79,6 +79,14 @@ def is_server_running(pid_file: str = DEFAULT_PID_FILE) -> bool:
         with open(pid_file, "r", encoding="utf-8") as f:
             pid = int((f.read() or "").strip())
         os.kill(pid, 0)
+        # Verify the process is actually car_server_modular, not a reused PID.
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmdline = f.read().decode("utf-8", errors="replace")
+            if "car_server_modular" not in cmdline:
+                return False
+        except (FileNotFoundError, PermissionError):
+            pass
         return True
     except Exception:
         return False

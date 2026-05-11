@@ -19,7 +19,9 @@ except ImportError:
 class Infrared(ModuleBase):
     join_timeout = 1.0
 
-    def __init__(self, track_pins=[13, 15, 11, 7]):
+    def __init__(self, track_pins=None):
+        if track_pins is None:
+            track_pins = [13, 15, 11, 7]
         self.track_pins = track_pins
         self.data = {'track': [1, 1, 1, 1]}
         self.lock = threading.Lock()
@@ -58,3 +60,10 @@ class Infrared(ModuleBase):
     def get_data(self):
         with self.lock:
             return dict(self.data)
+
+    def _after_stop(self):
+        if HAS_GPIO and self.enabled:
+            try:
+                GPIO.cleanup(self.track_pins)
+            except Exception:
+                pass

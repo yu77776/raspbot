@@ -1,6 +1,7 @@
 """Environment packet sampling for the car server."""
 
 import subprocess
+import threading
 import time
 from typing import Callable, Optional, Tuple
 
@@ -35,10 +36,15 @@ class EnvSampler:
         self.knob_volume_deadband = int(max(0, min(20, int(knob_volume_deadband))))
         self.knob_volume_after_app_grace_sec = float(knob_volume_after_app_grace_sec)
         self._last_applied_knob_volume: Optional[int] = None
+        self._last_knob_volume: Optional[int] = None
+        self._app_volume_overrides_knob = False
+        self._knob_volume_resume_baseline: Optional[int] = None
         self._last_app_audio_volume_ts = 0.0
 
     def note_app_audio_volume(self, volume: int) -> None:
         self._last_app_audio_volume_ts = time.monotonic()
+        self._app_volume_overrides_knob = True
+        self._knob_volume_resume_baseline = self._last_knob_volume
         self._last_applied_knob_volume = int(max(0, min(100, int(volume))))
 
     def sample(self) -> EnvPacket:
@@ -47,6 +53,7 @@ class EnvSampler:
         track = self.infrared.get_data().get("track", [1, 1, 1, 1])
         volume = int(env.get("volume", 0))
         self._apply_knob_volume(volume)
+        applied_volume = int(getattr(self.audio, "volume", volume))
 
         crying, cry_score = False, 0
         remote_crying, remote_cry_score, remote_alarm = self.remote_cry_provider()
@@ -73,7 +80,7 @@ class EnvSampler:
             temp_raw=int(env.get("temp_raw", 0)),
             temp_c=float(env.get("temp_c", 0.0)),
             smoke=int(env.get("smoke", 0)),
-            volume=volume,
+            volume=applied_volume,
             crying=crying,
             cry_score=cry_score,
             dist_cm=round(float(dist), 1),
@@ -101,14 +108,30 @@ class EnvSampler:
         if not self.knob_volume_enabled:
             return
         now = time.monotonic()
-        if now - self._last_app_audio_volume_ts < self.knob_volume_after_app_grace_sec:
-            return
         volume = int(max(0, min(100, int(volume))))
+        self._last_knob_volume = volume
+        if self._app_volume_overrides_knob:
+            if self._knob_volume_resume_baseline is None:
+                self._knob_volume_resume_baseline = volume
+                return
+            if now - self._last_app_audio_volume_ts < self.knob_volume_after_app_grace_sec:
+                return
+            if abs(volume - self._knob_volume_resume_baseline) <= self.knob_volume_deadband:
+                return
+            self._app_volume_overrides_knob = False
+            self._last_applied_knob_volume = None
+        elif now - self._last_app_audio_volume_ts < self.knob_volume_after_app_grace_sec:
+            return
         if self._last_applied_knob_volume is not None:
             if abs(volume - self._last_applied_knob_volume) < self.knob_volume_deadband:
                 return
         self._last_applied_knob_volume = volume
         self.audio.set_volume(volume)
+
+
+_uv_lock = threading.Lock()
+_uv_cached_ts = 0.0
+_uv_cached_value = False
 
 
 def _check_undervoltage() -> bool:
@@ -118,9 +141,11 @@ def _check_undervoltage() -> bool:
     Bit 16 (0x10000) = undervoltage has occurred since last check.
     Result is cached for 30s since the flag is sticky.
     """
+    global _uv_cached_ts, _uv_cached_value
     now = time.monotonic()
-    if _check_undervoltage._cached_ts > 0 and now - _check_undervoltage._cached_ts < 30.0:
-        return _check_undervoltage._cached_value
+    with _uv_lock:
+        if _uv_cached_ts > 0 and now - _uv_cached_ts < 30.0:
+            return _uv_cached_value
     try:
         out = subprocess.check_output(
             ["vcgencmd", "get_throttled"],
@@ -133,10 +158,7 @@ def _check_undervoltage() -> bool:
         result = bool(flags & 0x10001)
     except Exception:
         result = False
-    _check_undervoltage._cached_ts = now
-    _check_undervoltage._cached_value = result
+    with _uv_lock:
+        _uv_cached_ts = now
+        _uv_cached_value = result
     return result
-
-
-_check_undervoltage._cached_ts = 0.0
-_check_undervoltage._cached_value = False

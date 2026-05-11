@@ -432,7 +432,7 @@ class FaceEngine:
                     logger.error("[OLED] draw error: %s", exc)
 
             time.sleep(0.05)
-            tick += 0.05
+            tick = (tick + 0.05) % (2 * math.pi / 0.05)
         self._running = False
 
     def start(self):

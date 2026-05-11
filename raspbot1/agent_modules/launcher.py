@@ -27,7 +27,9 @@ logger = setup_logger('raspbot.agent')
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LOCAL_CONFIG_PATH = PROJECT_ROOT / "raspbot.local.json"
 REMOTE_SOURCE_DIR = PROJECT_ROOT.parent / "raspbot_remote"
+REMOTE_COMMON_SOURCE_DIR = PROJECT_ROOT.parent / "raspbot_common"
 REMOTE_DIR = "/home/pi/raspbot"
+REMOTE_COMMON_DIR = "/home/pi/raspbot_common"
 REMOTE_LOG = "/tmp/raspbot-car-server.log"
 REMOTE_PID = "/tmp/raspbot-car-server.pid"
 REMOTE_HEARTBEAT = "/tmp/raspbot-agent-heartbeat"
@@ -227,8 +229,8 @@ fi
         elif asr_auto:
             args.extend(["--asr-url", "auto"])
         if extra_args.strip():
-            args.append(extra_args.strip())
-        arg_text = " ".join(args)
+            args.extend(shlex.split(extra_args.strip()))
+        arg_text = " ".join(shlex.quote(a) for a in args)
         heartbeat_timeout_int = max(0, int(float(heartbeat_timeout or 0)))
         env_parts = ["PYTHONUNBUFFERED=1", "PYTHONIOENCODING=utf-8"]
         if auth_token:
@@ -274,7 +276,10 @@ PYTHON_BIN=".venv/bin/python"
 if [ ! -x "$PYTHON_BIN" ]; then
   PYTHON_BIN="python3"
 fi
-setsid env {env_text} "$PYTHON_BIN" -u car_server_modular.py {arg_text} < /dev/null > {REMOTE_LOG} 2>&1 &
+REMOTE_REAL_PARENT="$(dirname "$(pwd -P)")"
+REMOTE_LOGICAL_PARENT="$(dirname "$(pwd -L)")"
+REMOTE_PYTHONPATH="$REMOTE_REAL_PARENT:$REMOTE_LOGICAL_PARENT:${{PYTHONPATH:-}}"
+setsid env {env_text} PYTHONPATH="$REMOTE_PYTHONPATH" "$PYTHON_BIN" -u car_server_modular.py {arg_text} < /dev/null > {REMOTE_LOG} 2>&1 &
 echo "$!" > {REMOTE_PID}
 date +%s > {REMOTE_HEARTBEAT}
 if [ {heartbeat_timeout_int} -gt 0 ]; then
@@ -802,7 +807,12 @@ def main():
                     if not args.skip_car_sync:
                         uploaded = remote.sync_project(REMOTE_SOURCE_DIR)
                         logger.info('synced car code to %s (%s changed files)', REMOTE_DIR, uploaded)
-                        if uploaded > 0:
+                        uploaded_common = remote.sync_project(
+                            REMOTE_COMMON_SOURCE_DIR, remote_dir=REMOTE_COMMON_DIR,
+                        )
+                        if uploaded_common:
+                            logger.info('synced common to %s (%s changed files)', REMOTE_COMMON_DIR, uploaded_common)
+                        if uploaded > 0 or uploaded_common > 0:
                             result = remote.restart_discovery()
                             if result.exit_status == 0:
                                 logger.info('remote %s', result.stdout)

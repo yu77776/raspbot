@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Camera capture module for WebSocket JPEG streaming."""
+import concurrent.futures
 import os
 import threading
 import time
@@ -52,7 +53,9 @@ class Camera:
         self.thread = None
         self.started = False
         self.restart_cooldown_sec = float(os.getenv('RASPBOT_CAMERA_RESTART_COOLDOWN_SEC', '6'))
+        self.capture_timeout = float(os.getenv('RASPBOT_CAMERA_CAPTURE_TIMEOUT', '3.0'))
         self._last_restart_t = 0.0
+        self._capture_executor = None
 
         self.picam2 = None
 
@@ -130,10 +133,20 @@ class Camera:
             placeholder = self._make_placeholder()
             self.ready_event.set()
 
+        if HAS_CAMERA and self._capture_executor is None:
+            self._capture_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
         while not self.stop_event.is_set():
             loop_start = time.time()
             try:
-                frame = self.picam2.capture_array('main') if HAS_CAMERA else placeholder
+                if HAS_CAMERA:
+                    if self.picam2 is None:
+                        self.stop_event.wait(0.1)
+                        continue
+                    future = self._capture_executor.submit(self.picam2.capture_array, 'main')
+                    frame = future.result(timeout=self.capture_timeout)
+                else:
+                    frame = placeholder
                 frame = self._frame_to_bgr(frame)
                 ret, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, self.quality])
                 if ret:
@@ -145,14 +158,21 @@ class Camera:
                             self.fps = self.frame_count
                             self.frame_count = 0
                             self.fps_timer = time.time()
+            except concurrent.futures.TimeoutError:
+                logger.warning('camera capture timed out after %.1fs', self.capture_timeout)
+                continue
             except Exception as e:
                 logger.warning('frame loop error: %s', e)
-                time.sleep(0.1)
+                self.stop_event.wait(0.1)
                 continue
 
             target_period = 1.0 / max(5, self.framerate)
             elapsed = time.time() - loop_start
             time.sleep(max(0.0, target_period - elapsed))
+
+        if self._capture_executor is not None:
+            self._capture_executor.shutdown(wait=False)
+            self._capture_executor = None
 
         self._close_camera()
         self.ready_event.clear()
@@ -172,6 +192,9 @@ class Camera:
         self.stop_event.set()
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=2.0)
+        if self._capture_executor is not None:
+            self._capture_executor.shutdown(wait=False)
+            self._capture_executor = None
         self.started = False
 
     def restart(self):

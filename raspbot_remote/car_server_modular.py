@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import sys, os, asyncio, json, argparse, threading, time, signal
 from typing import Optional, Tuple
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 from logger_setup import setup_logger
 from protocol import (
@@ -374,39 +374,41 @@ class CarServer:
                 logger.warning('auto mode failed: cannot parse client ip from websocket peer')
 
         async def recv_commands():
-            async for msg in ws:
-                try:
-                    cmd_payload = None
-                    if isinstance(msg, bytes) and len(msg) > 1 and msg[0] == MSG_COMMAND:
-                        cmd_payload = json.loads(msg[1:].decode('utf-8'))
-                    elif isinstance(msg, str):
-                        cmd_payload = json.loads(msg)
-                    if cmd_payload is not None:
-                        source = str(cmd_payload.get('source', '') or '').strip().lower() \
-                            if isinstance(cmd_payload, dict) else ''
-                        is_app_source = source == 'app'
-                        now = time.monotonic()
-                        if not self._claim_control_owner(owner_id, is_app_source=is_app_source, now=now):
-                            continue
-                        if is_app_source:
-                            self.manual_override_until = now + self.manual_override_sec
-                        elif now < self.manual_override_until:
-                            # During manual override window, ignore non-app commands
-                            # to prevent APP servo/manual control from being overwritten.
-                            continue
-                        self.execute_command(CommandPacket.from_dict(cmd_payload))
-                except Exception as e:
-                    logger.warning('command error: %s', e)
-        
+            try:
+                async for msg in ws:
+                    try:
+                        cmd_payload = None
+                        if isinstance(msg, bytes) and len(msg) > 1 and msg[0] == MSG_COMMAND:
+                            cmd_payload = json.loads(msg[1:].decode('utf-8'))
+                        elif isinstance(msg, str):
+                            cmd_payload = json.loads(msg)
+                        if cmd_payload is not None:
+                            source = str(cmd_payload.get('source', '') or '').strip().lower() \
+                                if isinstance(cmd_payload, dict) else ''
+                            is_app_source = source == 'app'
+                            now = time.monotonic()
+                            if not self._claim_control_owner(owner_id, is_app_source=is_app_source, now=now):
+                                continue
+                            if is_app_source:
+                                self.manual_override_until = now + self.manual_override_sec
+                            elif now < self.manual_override_until:
+                                continue
+                            self.execute_command(CommandPacket.from_dict(cmd_payload))
+                    except Exception as e:
+                        logger.warning('command error: %s', e)
+            except websockets.ConnectionClosed:
+                pass
+
+        stopped = asyncio.Event()
+
         async def send_env():
-            while True:
+            while not stopped.is_set():
                 env_packet = self._get_latest_env()
                 payload = bytes([MSG_ENV]) + json.dumps(env_packet.to_dict()).encode('utf-8')
-                
                 try:
                     await ws.send(payload)
                 except websockets.ConnectionClosed:
-                    return
+                    break
                 now = time.monotonic()
                 if self.env_debug_interval > 0 and now - self._last_env_debug_log_ts >= self.env_debug_interval:
                     self._last_env_debug_log_ts = now
@@ -418,7 +420,7 @@ class CarServer:
             last_change_t = time.monotonic()
             last_stale_log_t = 0.0
             stale_restart_sec = float(os.getenv('RASPBOT_CAMERA_STALE_RESTART_SEC', '8'))
-            while True:
+            while not stopped.is_set():
                 seq, jpeg = self.camera.get_frame()
                 if not jpeg or seq == last_seq:
                     now = time.monotonic()
@@ -446,11 +448,24 @@ class CarServer:
                 try:
                     await ws.send(bytes([MSG_VIDEO]) + jpeg)
                 except websockets.ConnectionClosed:
-                    return
+                    break
                 await asyncio.sleep(0)
-        
+
         try:
-            await asyncio.gather(recv_commands(), send_env(), send_video())
+            tasks = [
+                asyncio.create_task(recv_commands()),
+                asyncio.create_task(send_env()),
+                asyncio.create_task(send_video()),
+            ]
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                exc = task.exception()
+                if exc is not None:
+                    raise exc
+            stopped.set()
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
         except websockets.ConnectionClosed:
             pass
         finally:

@@ -133,9 +133,11 @@ class WebRtcBridge:
         self._command_channel = None
         self._pending_ice = []
         self._stop_event: Optional[threading.Event] = None
+        self._env_task: Optional[asyncio.Task] = None
 
     async def run(self, stop_event: Optional[threading.Event] = None):
         self._stop_event = stop_event or threading.Event()
+        self._install_aiortc_exception_filter()
         car_task = asyncio.create_task(self._gateway._car_loop(self._stop_event))
         try:
             while not self._stop_event.is_set():
@@ -211,13 +213,17 @@ class WebRtcBridge:
         async def on_connectionstatechange():
             if self._pc is pc:
                 logger.info('peer connection %s', pc.connectionState)
+                if pc.connectionState in {"failed", "closed", "disconnected"}:
+                    asyncio.create_task(self._close_peer(pc))
 
         @pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange():
             if self._pc is pc:
                 logger.info('peer ice %s', pc.iceConnectionState)
+                if pc.iceConnectionState in {"failed", "closed", "disconnected"}:
+                    asyncio.create_task(self._close_peer(pc))
 
-        asyncio.create_task(self._env_loop())
+        self._env_task = asyncio.create_task(self._env_loop(pc))
 
     async def _handle_signal(self, ws, message: str):
         try:
@@ -313,9 +319,28 @@ class WebRtcBridge:
             return voice_cmd
         return bytes([cfg.MSG_COMMAND]) + json.dumps(strip_auth_fields(payload), ensure_ascii=False).encode("utf-8")
 
-    async def _env_loop(self):
+    def _install_aiortc_exception_filter(self):
+        loop = asyncio.get_running_loop()
+        previous_handler = loop.get_exception_handler()
+
+        def handler(loop_, context):
+            if _is_aiortc_disconnect_noise(context):
+                logger.debug("suppressed aiortc disconnect noise: %s", context.get("exception"))
+                return
+            if previous_handler is not None:
+                previous_handler(loop_, context)
+            else:
+                loop_.default_exception_handler(context)
+
+        loop.set_exception_handler(handler)
+
+    async def _env_loop(self, pc):
         last_sent = ""
-        while self._pc is not None:
+        while self._pc is pc:
+            if pc.connectionState in {"failed", "closed", "disconnected"}:
+                break
+            if pc.iceConnectionState in {"failed", "closed", "disconnected"}:
+                break
             channel = self._env_channel
             if channel is not None and channel.readyState == "open":
                 payload = self._env_provider() or {}
@@ -334,14 +359,30 @@ class WebRtcBridge:
             return payload
         return merge_env_cry(payload, self.cfg.cry_state)
 
-    async def _close_peer(self):
-        pc = self._pc
-        self._pc = None
-        self._env_channel = None
-        self._command_channel = None
-        self._pending_ice.clear()
-        if pc is not None:
-            await pc.close()
+    async def _close_peer(self, pc=None):
+        target = pc or self._pc
+        if target is None:
+            return
+        if self._pc is target:
+            self._pc = None
+            self._env_channel = None
+            self._command_channel = None
+            self._pending_ice.clear()
+            env_task = self._env_task
+            self._env_task = None
+            if (
+                env_task is not None
+                and not env_task.done()
+                and env_task is not asyncio.current_task()
+            ):
+                env_task.cancel()
+                await asyncio.gather(env_task, return_exceptions=True)
+        await target.close()
+
+
+def _is_aiortc_disconnect_noise(context: dict) -> bool:
+    exc = context.get("exception")
+    return isinstance(exc, ConnectionError) and "Cannot send data, not connected" in str(exc)
 
 
 def _candidate_to_json(candidate) -> dict:

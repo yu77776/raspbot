@@ -42,6 +42,9 @@ passes it to the remote car process.
 | `remote_crying` / `crying` | bool | | PC-derived cry state forwarded to the car/app. |
 | `remote_cry_score` / `cry_score` | int | `0..100` | PC-derived cry score. |
 | `remote_alarm` / `alarm` | string | token list | PC-derived alarm tokens. |
+| `reply_text` | string | | Text reply from the dialogue engine for App display. |
+| `tts_text` | string | | Text the car should speak via TTS. Falls back to `reply_text` if omitted. |
+| `intent_type` | string | `voice`, `chat` | Distinguishes voice-control commands from conversational chat replies. |
 | `auth_token` | string | local secret | App/WebRTC authentication envelope; PC strips before forwarding. |
 
 ## Environment JSON
@@ -53,7 +56,7 @@ Environment packets are sent inside `0x03 + json` or through the WebRTC `env` Da
 | `light`, `light_lux` | int | Light sensor raw/lux. |
 | `temp_raw`, `temp_c` | int/float | Temperature raw/Celsius. |
 | `smoke` | int | Smoke/aux analog level. |
-| `volume` | int | Speaker volume percent as currently applied by car logic. |
+| `volume` | int | Speaker volume percent currently applied by car logic. App-set volume holds until the physical knob moves past its deadband. |
 | `crying`, `cry_score` | bool/int | Current cry state, usually PC-derived. |
 | `dist_cm` | float | Ultrasonic distance in cm. |
 | `track` | int array | Bottom tracking sensors. |

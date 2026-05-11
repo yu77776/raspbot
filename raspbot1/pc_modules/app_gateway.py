@@ -234,7 +234,7 @@ class AppGateway:
             play_song=str(intent.get("play_song", "") or ""),
             stop_audio=bool(intent.get("stop_audio", False)),
         )
-        logger.info('app_voice text=%r -> action=%s song=%r stop_audio=%s', voice_text, cmd.action, cmd.play_song, cmd.stop_audio)
+        logger.info('app_voice text=%s -> action=%s song=%s stop_audio=%s', voice_text, cmd.action, cmd.play_song, cmd.stop_audio)
         return bytes([cfg.MSG_COMMAND]) + json.dumps(cmd.to_wire_dict()).encode("utf-8")
 
     def _merge_command_cry(self, command_packet):

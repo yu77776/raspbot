@@ -58,11 +58,16 @@ class CommandExecutor:
             resolved_song = self.audio.enqueue_song(song_cmd)
             if resolved_song:
                 display_song_cmd = resolved_song
-                logger.info('enqueue song=%r cmd=%r', resolved_song, song_cmd)
+                logger.info('enqueue song=%s cmd=%s', resolved_song, song_cmd)
             else:
                 logger.warning('no default song found')
         if cmd.stop_audio:
             self.audio.clear()
+
+        tts = str(cmd.tts_text or cmd.reply_text or "").strip()
+        if tts:
+            self.audio.enqueue('tts', tts)
+            logger.info('enqueue tts=%s', tts)
 
         dist = env_packet.dist_cm
         now = time.monotonic()

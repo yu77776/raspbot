@@ -142,7 +142,7 @@ class MicStream(ModuleBase):
                 open_timeout=self.connect_timeout,
                 ping_interval=20,
                 ping_timeout=10,
-                max_size=None,
+                max_size=2 * 1024 * 1024,
             ) as ws:
                 logger.info('connected %s', self.asr_url)
                 with self.lock:
@@ -177,10 +177,13 @@ class MicStream(ModuleBase):
         logger.info('stream loop stopped')
 
     def _run(self):
+        loop = asyncio.new_event_loop()
         try:
-            asyncio.run(self._run_async())
+            loop.run_until_complete(self._run_async())
         except Exception as e:
             logger.error('fatal loop error: %s', e)
+        finally:
+            loop.close()
 
     def _before_stop(self):
         self._stop_capture()

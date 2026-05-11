@@ -47,9 +47,22 @@ class SimpleTrendView @JvmOverloads constructor(
         pathEffect = DashPathEffect(floatArrayOf(dp(6f), dp(4f)), 0f)
     }
 
-    private val legendPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#706858")
+    private val legendDistancePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = distancePaint.color
         textSize = dp(10f)
+    }
+    private val legendTempPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = tempPaint.color
+        textSize = dp(10f)
+    }
+    private val legendLightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = lightPaint.color
+        textSize = dp(10f)
+    }
+    private val noDataPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#50A09888")
+        textSize = dp(12f)
+        textAlign = Paint.Align.CENTER
     }
 
     private var distanceSeries: List<Float> = emptyList()
@@ -81,18 +94,20 @@ class SimpleTrendView @JvmOverloads constructor(
         canvas.drawRect(left, top, right, bottom, gridPaint)
         canvas.drawLine(left, top + drawH / 2f, right, top + drawH / 2f, gridPaint)
 
-        val distance = if (distanceSeries.size >= 2) distanceSeries else listOf(42f, 38f, 44f, 31f, 36f, 28f, 34f)
-        val temp = if (tempSeries.size >= 2) tempSeries else listOf(25f, 26f, 25.5f, 27f, 26.4f, 26.8f, 26.1f)
-        val light = if (lightSeries.size >= 2) lightSeries else listOf(410f, 460f, 430f, 520f, 480f, 500f, 470f)
+        val hasData = distanceSeries.size >= 2 || tempSeries.size >= 2 || lightSeries.size >= 2
+        if (!hasData) {
+            canvas.drawText("等待遥测数据…", left + drawW / 2f, top + drawH / 2f, noDataPaint)
+            return
+        }
 
-        drawSeries(canvas, distance, distancePaint, left, top, drawW, drawH, 0f, 200f)
-        drawSeries(canvas, temp, tempPaint, left, top, drawW, drawH, 0f, 50f)
-        drawSeries(canvas, light, lightPaint, left, top, drawW, drawH, 0f, 1000f)
+        drawSeries(canvas, distanceSeries, distancePaint, left, top, drawW, drawH, 0f, 200f)
+        drawSeries(canvas, tempSeries, tempPaint, left, top, drawW, drawH, 0f, 50f)
+        drawSeries(canvas, lightSeries, lightPaint, left, top, drawW, drawH, 0f, 1000f)
 
         val legendY = h - dp(3f)
-        canvas.drawText("距离", left, legendY, legendPaint.apply { color = distancePaint.color })
-        canvas.drawText("温度", left + dp(42f), legendY, legendPaint.apply { color = tempPaint.color })
-        canvas.drawText("光照", left + dp(86f), legendY, legendPaint.apply { color = lightPaint.color })
+        canvas.drawText("距离", left, legendY, legendDistancePaint)
+        canvas.drawText("温度", left + dp(42f), legendY, legendTempPaint)
+        canvas.drawText("光照", left + dp(86f), legendY, legendLightPaint)
     }
 
     private fun drawSeries(
