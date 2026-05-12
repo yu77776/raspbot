@@ -138,6 +138,16 @@ def _extract_imu_yaw(env_raw: dict) -> Optional[float]:
         return None
 
 
+def _has_light_motion_risk(env_raw: dict) -> bool:
+    if not isinstance(env_raw, dict):
+        return False
+    alarm = str(env_raw.get("alarm", "") or "").lower()
+    return any(
+        token in alarm
+        for token in ("light_low", "light_high", "light_changed")
+    )
+
+
 class MotionController:
     """Continuous servo tracking with optional body/distance follow."""
 
@@ -191,6 +201,7 @@ class MotionController:
 
         imu_yaw = _extract_imu_yaw(env_raw)
         dist_cm = float(env_raw.get("dist_cm", 999.0) or 999.0) if isinstance(env_raw, dict) else 999.0
+        light_motion_risk = _has_light_motion_risk(env_raw)
 
         if self.state == MotionState.IDLE:
             if is_locked:
@@ -205,7 +216,7 @@ class MotionController:
                 self._on_enter_track(imu_yaw)
 
         if self.state == MotionState.TRACK:
-            out = self._do_track(track_result, imu_yaw, dist_cm, dt, re_locked)
+            out = self._do_track(track_result, imu_yaw, dist_cm, dt, re_locked, light_motion_risk)
         elif self.state == MotionState.SCAN:
             out = self._do_scan(dt)
         else:
@@ -264,7 +275,7 @@ class MotionController:
         self._scan_dir = 1 if self.servo_x <= 90 else -1
         self._scan_start_t = time.monotonic()
 
-    def _do_track(self, track_result, imu_yaw, dist_cm, dt, re_locked):
+    def _do_track(self, track_result, imu_yaw, dist_cm, dt, re_locked, light_motion_risk=False):
         from .baby_filter import TrackState
 
         if track_result.state != TrackState.LOCKED or track_result.box is None:
@@ -280,7 +291,7 @@ class MotionController:
 
         self._update_tracking_servos(cx, cy, dt)
 
-        if not self.cfg.enable_motor_control:
+        if not self.cfg.enable_motor_control or light_motion_risk:
             self._reset_follow()
             return MotionOutput(servo_x=self.servo_x, servo_y=self.servo_y, state=MotionState.TRACK)
 

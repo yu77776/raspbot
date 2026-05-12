@@ -22,6 +22,7 @@ class CommandExecutor:
         set_remote_cry_state: Callable[[CommandPacket], None],
         note_app_audio_volume: Callable[[int], None],
         sync_oled_alarm: Callable[[EnvPacket], None],
+        baby_tts_provider: Callable[[str], str] = None,
     ):
         self.motor = motor
         self.audio = audio
@@ -31,6 +32,7 @@ class CommandExecutor:
         self.set_remote_cry_state = set_remote_cry_state
         self.note_app_audio_volume = note_app_audio_volume
         self.sync_oled_alarm = sync_oled_alarm
+        self.baby_tts_provider = baby_tts_provider
         self.cliff_back_speed = int(max(0, min(255, int(os.getenv("RASPBOT_CLIFF_BACK_SPEED", "55")))))
         self.cliff_back_sec = float(os.getenv("RASPBOT_CLIFF_BACK_SEC", "0.35"))
         self._cliff_back_until = 0.0
@@ -71,6 +73,10 @@ class CommandExecutor:
 
         dist = env_packet.dist_cm
         now = time.monotonic()
+        care_tts = self._baby_tts_for_alarm(env_packet.alarm)
+        if care_tts and not tts:
+            self.audio.enqueue('tts', care_tts)
+            logger.info('enqueue care tts=%s', care_tts)
         cliff = _is_cliff_alarm(env_packet)
         if cliff:
             if self._cliff_back_until <= now:
@@ -123,6 +129,15 @@ class CommandExecutor:
                 )
 
         self.sync_oled_alarm(env_packet)
+
+    def _baby_tts_for_alarm(self, alarm: str) -> str:
+        if self.baby_tts_provider is None:
+            return ""
+        try:
+            return str(self.baby_tts_provider(alarm) or "").strip()
+        except Exception as exc:
+            logger.warning("baby tts provider error: %s", exc)
+            return ""
 
 
 def _is_cliff_alarm(env_packet: EnvPacket) -> bool:

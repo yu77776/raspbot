@@ -136,6 +136,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvHomeTemp: TextView
     private lateinit var tvHomeSmoke: TextView
     private lateinit var tvHomeLight: TextView
+    private lateinit var tvCareSummary: TextView
     private lateinit var layoutAlarmBanner: LinearLayout
     private lateinit var tvAlarmText: TextView
     private lateinit var tvAlarmCount: TextView
@@ -180,6 +181,8 @@ class MainActivity : AppCompatActivity() {
     private val alertHistory = ArrayDeque<String>()
     private var alertCount = 0
     private var lastAlarmSignature = ""
+    private var lastAlarmAtMs = 0L
+    private var latestAlarmText = ""
 
     // Trends
     private val trendDistance = ArrayDeque<TrendSample>()
@@ -298,6 +301,7 @@ class MainActivity : AppCompatActivity() {
         tvHomeTemp = findViewById(R.id.tvHomeTemp)
         tvHomeSmoke = findViewById(R.id.tvHomeSmoke)
         tvHomeLight = findViewById(R.id.tvHomeLight)
+        tvCareSummary = findViewById(R.id.tvCareSummary)
         layoutAlarmBanner = findViewById(R.id.layoutAlarmBanner)
         tvAlarmText = findViewById(R.id.tvAlarmText)
         tvAlarmCount = findViewById(R.id.tvAlarmCount)
@@ -630,9 +634,12 @@ class MainActivity : AppCompatActivity() {
                 alertCount = 0
             }
             lastAlarmSignature = ""
+            lastAlarmAtMs = 0L
+            latestAlarmText = ""
             tvAlertHistory.text = "-"
             tvAlertSummary.text = "0"
             tvAlarmCount.text = "0条"
+            updateCareSummary(null, null, null, null, null)
             updateAlertBanner()
         }
     }
@@ -1030,21 +1037,37 @@ class MainActivity : AppCompatActivity() {
             // alarm
             val alarm = AlarmPolicy.buildAlarmMessage(obj, dist, smoke, temp, lux, crying, cryScore)
             if (!alarm.isNullOrBlank()) {
-                recordAlarm(alarm)
+                recordAlarm(alarm, temp, dist, smoke, lux, crying, cryScore)
             } else {
                 lastAlarmSignature = ""
             }
+            updateCareSummary(alarm, dist, temp, crying, cryScore)
 
         } catch (e: Exception) {
             Log.w(TAG, "handleEnvJson error", e)
         }
     }
 
-    private fun recordAlarm(alarm: String) {
+    private fun recordAlarm(
+        alarm: String,
+        temp: Float?,
+        dist: Float?,
+        smoke: Int?,
+        lux: Int?,
+        crying: Boolean?,
+        cryScore: Int?
+    ) {
         if (alarm == lastAlarmSignature) return
         lastAlarmSignature = alarm
-        val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-        val entry = "[$time] $alarm"
+        lastAlarmAtMs = System.currentTimeMillis()
+        latestAlarmText = alarm
+        val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(lastAlarmAtMs))
+        val details = buildAlertDetails(temp, dist, smoke, lux, crying, cryScore)
+        val entry = if (details.isBlank()) {
+            "[$time] $alarm"
+        } else {
+            "[$time] $alarm\n$details"
+        }
         synchronized(alertHistory) {
             alertHistory.addLast(entry)
             if (alertHistory.size > MAX_ALERT_HISTORY) alertHistory.removeFirst()
@@ -1053,9 +1076,83 @@ class MainActivity : AppCompatActivity() {
         mainHandler.post {
             updateAlertBanner()
             tvAlertSummary.text = alertCount.toString()
-            tvAlertHistory.text = alertHistory.joinToString("\n")
+            tvAlertHistory.text = alertHistory.joinToString("\n\n")
             showAlertNotification(alarm)
         }
+    }
+
+    private fun buildAlertDetails(
+        temp: Float?,
+        dist: Float?,
+        smoke: Int?,
+        lux: Int?,
+        crying: Boolean?,
+        cryScore: Int?
+    ): String {
+        val parts = ArrayList<String>()
+        if (dist != null) parts.add("距离 ${dist.toInt()}cm")
+        if (temp != null) parts.add("室温 ${String.format("%.1f", temp)}°C")
+        if (lux != null) parts.add("光照 ${lux}lux")
+        if (smoke != null) parts.add("烟雾 $smoke")
+        if (cryScore != null) parts.add("哭声 $cryScore%")
+        else if (crying == true) parts.add("哭声 检测")
+        return parts.joinToString(" · ")
+    }
+
+    private fun updateCareSummary(
+        alarm: String?,
+        dist: Float?,
+        temp: Float?,
+        crying: Boolean?,
+        cryScore: Int?
+    ) {
+        if (!::tvCareSummary.isInitialized) return
+        val summary = buildCareSummary(alarm, dist, temp, crying, cryScore)
+        mainHandler.post {
+            tvCareSummary.text = summary
+            val hasAlarm = !alarm.isNullOrBlank()
+            tvCareSummary.setTextColor(if (hasAlarm) Color.parseColor("#C9A84A") else Color.parseColor("#F0ECE4"))
+        }
+    }
+
+    private fun buildCareSummary(
+        alarm: String?,
+        dist: Float?,
+        temp: Float?,
+        crying: Boolean?,
+        cryScore: Int?
+    ): String {
+        if (!alarm.isNullOrBlank()) {
+            return when {
+                alarm.contains("检测到哭声") -> "检测到哭声，已启动安抚提醒"
+                alarm.contains("室温偏高") -> "室温偏高，建议查看宝宝状态"
+                alarm.contains("室温偏低") -> "室温偏低，建议查看宝宝状态"
+                alarm.contains("光照不足") -> "光照不足，小车已保守跟随"
+                alarm.contains("光照过强") -> "光照过强，小车已保守跟随"
+                alarm.contains("光照变化") -> "光照变化明显，小车已暂停车身跟随"
+                alarm.contains("距离过近") -> "距离偏近，小车会给宝宝留出空间"
+                else -> alarm
+            }
+        }
+        if (dist == null && temp == null && crying == null && cryScore == null) {
+            return "等待小车环境数据"
+        }
+        val parts = ArrayList<String>()
+        if (dist != null) parts.add("距离 ${dist.toInt()}cm")
+        if (temp != null) parts.add("室温 ${String.format("%.1f", temp)}°C")
+        if (crying == true || (cryScore != null && cryScore >= AlarmPolicy.CRY_ALARM_SCORE)) {
+            parts.add("哭声需关注")
+        } else if (cryScore != null && cryScore >= 40) {
+            parts.add("宝宝可能有些烦躁")
+        } else {
+            parts.add("宝宝状态正常")
+        }
+        if (lastAlarmAtMs > 0 && System.currentTimeMillis() - lastAlarmAtMs < TREND_WINDOW_MS) {
+            parts.add("5分钟内有提醒")
+        } else {
+            parts.add("5分钟内无报警")
+        }
+        return parts.joinToString("，")
     }
 
     private fun updateAlertBanner() {

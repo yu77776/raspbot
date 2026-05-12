@@ -39,9 +39,9 @@
   "follow_speed_max": 50,
   "follow_back_speed_max": 40,
   "follow_servo_center_deg": 12.0,
-  "follow_min_action_sec": 0.2,
-  "follow_max_action_sec": 0.5,
-  "follow_cooldown_sec": 0.5,
+  "follow_min_action_sec": 0.12,
+  "follow_max_action_sec": 0.28,
+  "follow_cooldown_sec": 0.7,
   "obstacle_cm": 30.0,
 
 

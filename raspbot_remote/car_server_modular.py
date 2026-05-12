@@ -121,6 +121,7 @@ class CarServer:
             set_remote_cry_state=self._set_remote_cry_state,
             note_app_audio_volume=self.env_sampler.note_app_audio_volume,
             sync_oled_alarm=self._sync_oled_alarm,
+            baby_tts_provider=self._baby_tts_for_alarm,
         )
 
     def _safe_stop_motion(self, reason: str, *, home_servos: Optional[bool] = None) -> None:
@@ -161,12 +162,28 @@ class CarServer:
             return f'SMOKE {env_packet.smoke}'
         if 'cliff' in alarm or 'track_empty' in alarm or 'suspend' in alarm:
             return 'CLIFF'
+        if 'close_distance' in alarm:
+            return f'CLOSE {env_packet.dist_cm:.0f}cm'
+        if 'temp_high' in alarm:
+            return f'TEMP HIGH {env_packet.temp_c:.1f}C'
+        if 'temp_low' in alarm:
+            return f'TEMP LOW {env_packet.temp_c:.1f}C'
+        if 'light_low' in alarm:
+            return f'LIGHT LOW {env_packet.light_lux}'
+        if 'light_high' in alarm:
+            return f'LIGHT HIGH {env_packet.light_lux}'
+        if 'light_changed' in alarm:
+            return 'LIGHT CHANGE'
         if 'cry' in alarm:
             return 'BABY CRY'
         return ''
 
     def _sync_oled_alarm(self, env_packet: EnvPacket) -> None:
         self.oled.set_alarm(self._oled_alarm_text(env_packet))
+
+    def _baby_tts_for_alarm(self, alarm: str) -> str:
+        tokens = str(alarm or '').replace(';', '+').replace(',', '+').split('+')
+        return self.env_sampler.baby_tts_for_tokens([token.strip() for token in tokens if token.strip()])
 
     def set_process_restart_callback(self, callback) -> None:
         self._process_restart_callback = callback

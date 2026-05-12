@@ -36,12 +36,13 @@ class PCF8591(ModuleBase):
         # On this car, warming the temperature sensor makes AIN1 decrease.
         # Use the measured B-value NTC model:
         #   Rntc = Rfix * Vout / (Vref - Vout)
-        #   B=3430, R0=64150 ohm, Rfix=10000 ohm.
+        # The YL-40 temperature probe on this car behaves like a 100K NTC.
+        # Around raw=233 it should read room temperature (~23C), not ~12C.
         self.adc_vref = float(os.getenv('RASPBOT_ADC_VREF', '5.0'))
         self.temp_series_ohm = float(os.getenv('RASPBOT_TEMP_SERIES_OHM', '10000'))
-        self.temp_nominal_ohm = float(os.getenv('RASPBOT_TEMP_NOMINAL_OHM', '64150'))
+        self.temp_nominal_ohm = float(os.getenv('RASPBOT_TEMP_NOMINAL_OHM', '100000'))
         self.temp_nominal_c = float(os.getenv('RASPBOT_TEMP_NOMINAL_C', '25.0'))
-        self.temp_beta = float(os.getenv('RASPBOT_TEMP_BETA', '3430'))
+        self.temp_beta = float(os.getenv('RASPBOT_TEMP_BETA', '3950'))
 
         self.battery_divider_ratio = float(os.getenv('RASPBOT_BATTERY_DIVIDER_RATIO', '2.0'))
         self.battery_min_v = float(os.getenv('RASPBOT_BATTERY_MIN_V', '6.4'))

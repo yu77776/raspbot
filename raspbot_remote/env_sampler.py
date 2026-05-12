@@ -5,7 +5,8 @@ import threading
 import time
 from typing import Callable, Optional, Tuple
 
-from protocol import EnvPacket, ImuPacket, is_cliff_track
+from care_policy import CarePolicy, CarePolicyConfig
+from protocol import EnvPacket, ImuPacket
 
 
 class EnvSampler:
@@ -31,6 +32,7 @@ class EnvSampler:
         self.camera = camera
         self.audio = audio
         self.cry_alarm_score_min = int(max(0, min(100, int(cry_alarm_score_min))))
+        self.care_policy = CarePolicy(CarePolicyConfig(cry_alarm_score_min=self.cry_alarm_score_min))
         self.remote_cry_provider = remote_cry_provider
         self.knob_volume_enabled = bool(knob_volume_enabled)
         self.knob_volume_deadband = int(max(0, min(20, int(knob_volume_deadband))))
@@ -62,17 +64,17 @@ class EnvSampler:
         if remote_cry_score is not None:
             cry_score = remote_cry_score
 
-        alarms = []
-        if env.get("smoke_alarm"):
-            alarms.append("smoke")
-        if is_cliff_track(track):
-            alarms.append("cliff")
-        if crying and cry_score >= self.cry_alarm_score_min:
-            alarms.append("cry")
-        if _check_undervoltage():
-            alarms.append("low_battery")
-        if remote_alarm:
-            alarms.append(remote_alarm)
+        now = time.monotonic()
+        alarms = self.care_policy.build_alarm_tokens(
+            env=env,
+            dist_cm=round(float(dist), 1),
+            track=track,
+            crying=crying,
+            cry_score=cry_score,
+            undervoltage=_check_undervoltage(),
+            remote_alarm=remote_alarm or "",
+            now=now,
+        )
 
         return EnvPacket(
             light=int(env.get("light", 0)),
@@ -88,6 +90,12 @@ class EnvSampler:
             alarm="+".join(alarms),
             imu=self._sample_imu(),
             fps=int(self.camera.get_fps()),
+        )
+
+    def baby_tts_for_tokens(self, tokens, now: Optional[float] = None) -> str:
+        return self.care_policy.baby_tts_for_tokens(
+            tokens,
+            now=time.monotonic() if now is None else now,
         )
 
     def _sample_imu(self) -> Optional[ImuPacket]:

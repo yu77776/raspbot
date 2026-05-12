@@ -74,6 +74,12 @@ Preferred backend tokens are:
 | `cry` / `cry_detected` | `检测到哭声` |
 | `close_distance` | `距离过近` |
 | `cliff` / `track_empty` | `疑似悬空` |
+| `low_battery` | `电池电量低` |
+| `temp_high` | `室温偏高，请查看宝宝状态` |
+| `temp_low` | `室温偏低，请查看宝宝状态` |
+| `light_low` | `光照不足，识别稳定性可能下降` |
+| `light_high` | `光照过强，画面可能过曝` |
+| `light_changed` | `光照变化明显，小车已保守跟随` |
 
 The App may still derive local alerts from raw environment values, but backend alarm tokens should remain the primary cross-process alarm contract.
 

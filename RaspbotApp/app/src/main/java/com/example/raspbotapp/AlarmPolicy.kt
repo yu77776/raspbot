@@ -6,8 +6,8 @@ import java.util.Locale
 
 object AlarmPolicy {
     const val DISTANCE_CLOSE_CM = 20f
-    const val TEMP_HIGH_C = 38f
-    const val TEMP_LOW_C = 5f
+    const val TEMP_HIGH_C = 32f
+    const val TEMP_LOW_C = 18f
     const val LIGHT_LOW_LUX = 50
     const val LIGHT_HIGH_LUX = 900
     const val SMOKE_ALARM_LEVEL = 60
@@ -67,9 +67,14 @@ object AlarmPolicy {
         return when {
             lower == "smoke" || lower.startsWith("smoke") -> "烟雾异常"
             lower == "cry" || lower.startsWith("cry") -> "检测到哭声"
-            lower.contains("dist") || lower.contains("close") -> "距离过近"
+            lower == "close_distance" || lower.contains("dist") || lower.contains("close") -> "距离过近"
             lower.contains("track") || lower.contains("cliff") || lower.contains("suspend") -> "疑似悬空"
             lower.contains("battery") || lower.contains("volt") -> "电池电量低"
+            lower == "temp_high" -> "室温偏高，请查看宝宝状态"
+            lower == "temp_low" -> "室温偏低，请查看宝宝状态"
+            lower == "light_low" -> "光照不足，识别稳定性可能下降"
+            lower == "light_high" -> "光照过强，画面可能过曝"
+            lower == "light_changed" -> "光照变化明显，小车已保守跟随"
             else -> token
         }
     }
