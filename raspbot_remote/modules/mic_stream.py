@@ -28,6 +28,8 @@ class MicStream(ModuleBase):
         connect_timeout=5,
         max_backoff=8.0,
         health_timeout=2.0,
+        read_timeout=None,
+        send_timeout=None,
     ):
         self.asr_url = asr_url
         self.mic_device = mic_device or os.getenv('MIC_DEVICE', 'default')
@@ -38,6 +40,16 @@ class MicStream(ModuleBase):
         self.connect_timeout = float(connect_timeout)
         self.max_backoff = float(max_backoff)
         self.health_timeout = float(health_timeout)
+        self.read_timeout = float(
+            read_timeout
+            if read_timeout is not None
+            else os.getenv('MIC_READ_TIMEOUT_SEC', '1.5')
+        )
+        self.send_timeout = float(
+            send_timeout
+            if send_timeout is not None
+            else os.getenv('MIC_SEND_TIMEOUT_SEC', '2.0')
+        )
 
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -47,7 +59,14 @@ class MicStream(ModuleBase):
         self.connected = False
         self._capture_proc = None
 
-        logger.info('init asr_url=%s device=%s', self.asr_url, self.mic_device)
+        logger.info(
+            'init asr_url=%s device=%s chunk_bytes=%s read_timeout=%.1fs send_timeout=%.1fs',
+            self.asr_url,
+            self.mic_device,
+            self.chunk_bytes,
+            self.read_timeout,
+            self.send_timeout,
+        )
 
     def _detect_capture_devices(self):
         usb_cards = []
@@ -84,7 +103,9 @@ class MicStream(ModuleBase):
 
     def _open_capture(self):
         errors = []
-        for dev in self._candidate_devices():
+        candidates = self._candidate_devices()
+        logger.info('candidate devices: %s', ', '.join(candidates))
+        for dev in candidates:
             cmd = [
                 'arecord',
                 '-q',
@@ -114,6 +135,23 @@ class MicStream(ModuleBase):
             errors.append(f'{dev}: {err or "open failed"}')
 
         raise RuntimeError('no available microphone device: ' + ' | '.join(errors))
+
+    async def _read_chunk(self, proc, device):
+        if proc.poll() is not None:
+            raise RuntimeError(f'capture process exited rc={proc.returncode} device={device}')
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(proc.stdout.read, self.chunk_bytes),
+                timeout=self.read_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                'audio read timeout device=%s timeout=%.1fs -> restart capture',
+                device,
+                self.read_timeout,
+            )
+            self._stop_capture()
+            raise RuntimeError(f'audio read timeout device={device}')
 
     def _stop_capture(self):
         with self.lock:
@@ -148,13 +186,26 @@ class MicStream(ModuleBase):
                 with self.lock:
                     self.connected = True
 
+                last_progress_log = 0.0
                 while not self.stop_event.is_set():
-                    chunk = await asyncio.to_thread(proc.stdout.read, self.chunk_bytes)
+                    chunk = await self._read_chunk(proc, device)
                     if not chunk:
                         raise RuntimeError('audio stream closed')
-                    await ws.send(chunk)
+                    try:
+                        await asyncio.wait_for(ws.send(chunk), timeout=self.send_timeout)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            'audio send timeout device=%s timeout=%.1fs -> reconnect',
+                            device,
+                            self.send_timeout,
+                        )
+                        raise RuntimeError(f'audio send timeout device={device}')
+                    now = time.time()
                     with self.lock:
-                        self.last_ok_ts = time.time()
+                        self.last_ok_ts = now
+                    if now - last_progress_log >= 10.0:
+                        last_progress_log = now
+                        logger.info('streaming audio device=%s bytes=%s', device, len(chunk))
         finally:
             with self.lock:
                 self.connected = False

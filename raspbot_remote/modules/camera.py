@@ -54,8 +54,10 @@ class Camera:
         self.started = False
         self.restart_cooldown_sec = float(os.getenv('RASPBOT_CAMERA_RESTART_COOLDOWN_SEC', '6'))
         self.capture_timeout = float(os.getenv('RASPBOT_CAMERA_CAPTURE_TIMEOUT', '3.0'))
+        self.soft_recover_threshold = int(os.getenv('RASPBOT_CAMERA_SOFT_RECOVER', '3'))
         self._last_restart_t = 0.0
         self._capture_executor = None
+        self._consecutive_timeouts = 0
 
         self.picam2 = None
 
@@ -159,12 +161,18 @@ class Camera:
                             self.frame_count = 0
                             self.fps_timer = time.time()
             except concurrent.futures.TimeoutError:
-                logger.warning('camera capture timed out after %.1fs', self.capture_timeout)
-                continue
+                self._consecutive_timeouts += 1
+                logger.warning('camera capture timed out after %.1fs (x%d)',
+                               self.capture_timeout, self._consecutive_timeouts)
+                if self._consecutive_timeouts >= self.soft_recover_threshold:
+                    self._soft_recover()
             except Exception as e:
+                self._consecutive_timeouts += 1
                 logger.warning('frame loop error: %s', e)
-                self.stop_event.wait(0.1)
+                self.stop_event.wait(0.5)
                 continue
+            else:
+                self._consecutive_timeouts = 0
 
             target_period = 1.0 / max(5, self.framerate)
             elapsed = time.time() - loop_start
@@ -196,6 +204,21 @@ class Camera:
             self._capture_executor.shutdown(wait=False)
             self._capture_executor = None
         self.started = False
+
+    def _soft_recover(self):
+        """Quick stop + start of the picam2 stream without closing the device."""
+        if self.picam2 is None:
+            return
+        logger.info('soft recover: restarting picam2 stream (timeouts=%d)',
+                    self._consecutive_timeouts)
+        try:
+            self.picam2.stop()
+            self.picam2.start()
+            self._consecutive_timeouts = 0
+            logger.info('soft recover ok')
+        except Exception as exc:
+            logger.warning('soft recover failed: %s', exc)
+            self.picam2 = None  # force full restart by stale detection
 
     def restart(self):
         if not self.restart_lock.acquire(blocking=False):

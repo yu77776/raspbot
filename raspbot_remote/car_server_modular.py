@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys, os, asyncio, json, argparse, threading, time, signal
 from typing import Optional, Tuple
+from urllib.parse import parse_qsl, urlsplit
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 from logger_setup import setup_logger
@@ -26,16 +27,34 @@ from modules.audio import Audio
 from modules.oled_face import FaceEngine
 from modules.mic_stream import MicStream
 from modules.mpu6050 import MPU6050
+from modules.buzzer import Buzzer
 import websockets
 
 logger = setup_logger('raspbot.car')
 
 
+def _safe_ws_path(ws) -> str:
+    path = getattr(ws, 'path', None)
+    if path:
+        return path
+    req = getattr(ws, 'request', None)
+    if req is not None:
+        return getattr(req, 'path', '') or ''
+    return ''
+
+
+def _is_data_only_path(path: str) -> bool:
+    query = urlsplit(path or '').query
+    params = dict(parse_qsl(query, keep_blank_values=True))
+    value = str(params.get('data_only', params.get('mode', '')) or '').strip().lower()
+    return value in {'1', 'true', 'yes', 'on', 'data', 'env'}
+
+
 class CarServer:
-    def __init__(self, asr_url=None, mic_health_timeout=2.0, auth_token=None):
+    def __init__(self, asr_url=None, mic_health_timeout=5.0, auth_token=None):
         self.auth_token = resolve_auth_token(auth_token)
         self.ultrasonic = Ultrasonic()
-        self.pcf8591 = PCF8591()
+        self.pcf8591 = PCF8591(smoke_threshold=30)
         self.infrared = Infrared()
         self.camera = Camera(
             width=int(os.getenv('RASPBOT_WS_WIDTH', '640')),
@@ -47,6 +66,7 @@ class CarServer:
         self.audio = Audio(songs_dir=os.path.join(os.path.dirname(__file__), 'songs'))
         self.oled = FaceEngine()
         self.imu = MPU6050(addr=0x68, sample_hz=100, beta=0.08, auto_calibrate=True)
+        self.buzzer = Buzzer()
         resolved_asr = str(asr_url or '').strip()
         self.mic_auto_mode = resolved_asr.lower() == 'auto'
         mic_init_url = 'ws://127.0.0.1:6006/audio' if self.mic_auto_mode else resolved_asr
@@ -64,7 +84,7 @@ class CarServer:
         self.manual_override_until = 0.0
         self.manual_override_sec = float(os.getenv('RASPBOT_MANUAL_OVERRIDE_SEC', '1.2'))
         self.command_timeout_sec = float(os.getenv('RASPBOT_COMMAND_TIMEOUT_SEC', '0.8'))
-        self.home_servos_on_safe_stop = as_bool(os.getenv('RASPBOT_HOME_SERVOS_ON_SAFE_STOP', '1'))
+        self.home_servos_on_safe_stop = as_bool(os.getenv('RASPBOT_HOME_SERVOS_ON_SAFE_STOP', '0'))
         self._command_lock = threading.Lock()
         self._last_command_time = 0.0
         self._last_motion_command_active = False
@@ -76,8 +96,6 @@ class CarServer:
         self.env_update_interval = float(os.getenv('RASPBOT_ENV_INTERVAL_SEC', '0.5'))
         self.env_debug_interval = float(os.getenv('RASPBOT_ENV_DEBUG_INTERVAL_SEC', '0'))
         self._last_env_debug_log_ts = 0.0
-        self._process_restart_callback = None
-        self._process_restart_lock = threading.Lock()
         self._env_lock = threading.Lock()
         self._remote_cry_lock = threading.Lock()
         self._remote_crying: Optional[bool] = None
@@ -111,6 +129,7 @@ class CarServer:
             knob_volume_enabled=as_bool(os.getenv('RASPBOT_KNOB_VOLUME_ENABLED', '1')),
             knob_volume_deadband=int(max(0, min(20, int(os.getenv('RASPBOT_KNOB_VOLUME_DEADBAND', '3'))))),
             knob_volume_after_app_grace_sec=float(os.getenv('RASPBOT_KNOB_VOLUME_APP_GRACE_SEC', '1.5')),
+            knob_volume_callback=self._on_knob_volume_changed,
         )
         self.command_executor = CommandExecutor(
             motor=self.motor,
@@ -122,6 +141,7 @@ class CarServer:
             note_app_audio_volume=self.env_sampler.note_app_audio_volume,
             sync_oled_alarm=self._sync_oled_alarm,
             baby_tts_provider=self._baby_tts_for_alarm,
+            buzzer=self.buzzer,
         )
 
     def _safe_stop_motion(self, reason: str, *, home_servos: Optional[bool] = None) -> None:
@@ -143,6 +163,9 @@ class CarServer:
         with self._remote_cry_lock:
             return self._remote_crying, self._remote_cry_score, self._remote_alarm
 
+    def _on_knob_volume_changed(self, volume: int) -> None:
+        self.oled.push_event("volume", volume, duration=1.5)
+
     def _sample_env_packet(self):
         return self.env_sampler.sample()
 
@@ -150,6 +173,7 @@ class CarServer:
         env_packet = self._sample_env_packet()
         with self._env_lock:
             self._latest_env = env_packet
+        self._enqueue_baby_tts_for_env(env_packet)
         return env_packet
 
     def _get_latest_env(self):
@@ -163,19 +187,19 @@ class CarServer:
         if 'cliff' in alarm or 'track_empty' in alarm or 'suspend' in alarm:
             return 'CLIFF'
         if 'close_distance' in alarm:
-            return f'CLOSE {env_packet.dist_cm:.0f}cm'
+            return f'CLOSE {env_packet.dist_cm:.0f}'
         if 'temp_high' in alarm:
-            return f'TEMP HIGH {env_packet.temp_c:.1f}C'
+            return f'TEMP HI {env_packet.temp_c:.1f}'
         if 'temp_low' in alarm:
-            return f'TEMP LOW {env_packet.temp_c:.1f}C'
+            return f'TEMP LO {env_packet.temp_c:.1f}'
         if 'light_low' in alarm:
-            return f'LIGHT LOW {env_packet.light_lux}'
+            return f'DARK {env_packet.light_lux}'
         if 'light_high' in alarm:
-            return f'LIGHT HIGH {env_packet.light_lux}'
+            return f'BRIGHT {env_packet.light_lux}'
         if 'light_changed' in alarm:
-            return 'LIGHT CHANGE'
+            return 'LIGHT +/-'
         if 'cry' in alarm:
-            return 'BABY CRY'
+            return f'CRY {env_packet.cry_score}'
         return ''
 
     def _sync_oled_alarm(self, env_packet: EnvPacket) -> None:
@@ -185,17 +209,12 @@ class CarServer:
         tokens = str(alarm or '').replace(';', '+').replace(',', '+').split('+')
         return self.env_sampler.baby_tts_for_tokens([token.strip() for token in tokens if token.strip()])
 
-    def set_process_restart_callback(self, callback) -> None:
-        self._process_restart_callback = callback
-
-    def _request_process_restart(self, reason: str) -> None:
-        callback = self._process_restart_callback
-        if callback is None:
-            logger.error('process restart requested but no callback is installed: %s', reason)
+    def _enqueue_baby_tts_for_env(self, env_packet: EnvPacket) -> None:
+        tts = self._baby_tts_for_alarm(env_packet.alarm)
+        if not tts:
             return
-        with self._process_restart_lock:
-            logger.error('request process restart: %s', reason)
-            callback(reason)
+        self.audio.enqueue('tts', tts)
+        logger.info('enqueue env care tts=%s alarm=%s', tts, env_packet.alarm)
 
     def _start_env_cache_loop(self):
         def updater():
@@ -274,7 +293,7 @@ class CarServer:
 
                 if should_stop:
                     logger.warning('command timeout age=%.2fs timeout=%.2fs -> safe stop', age, self.command_timeout_sec)
-                    self._safe_stop_motion('command timeout')
+                    self._safe_stop_motion('command timeout', home_servos=False)
                 time.sleep(0.1)
 
         self.command_watchdog_thread = threading.Thread(target=watchdog, daemon=True)
@@ -327,6 +346,7 @@ class CarServer:
         self.camera.start()
         self.audio.start()
         self.oled.start()
+        self.buzzer.start()
         if self.mic_enabled:
             if self.mic_auto_mode:
                 logger.info('auto mode: waiting for PC websocket client to resolve ASR url')
@@ -362,6 +382,7 @@ class CarServer:
         self.camera.stop()
         self.audio.stop()
         self.oled.stop()
+        self.buzzer.stop()
     
     def execute_command(self, cmd: CommandPacket):
         self.command_executor.execute(cmd)
@@ -369,11 +390,12 @@ class CarServer:
     async def handle_client(self, ws):
         addr = ws.remote_address
         owner_id = id(ws)
+        data_only = _is_data_only_path(_safe_ws_path(ws))
         if not is_ws_authorized(ws, self.auth_token):
             logger.warning('reject unauthorized client: %s', addr)
             await ws.close(code=1008, reason='unauthorized')
             return
-        logger.info('connected: %s', addr)
+        logger.info('connected: %s data_only=%s', addr, data_only)
         if self.mic_enabled and self.mic_auto_mode:
             peer_ip = addr[0] if isinstance(addr, tuple) and len(addr) >= 1 else None
             if peer_ip:
@@ -402,6 +424,12 @@ class CarServer:
                         if cmd_payload is not None:
                             source = str(cmd_payload.get('source', '') or '').strip().lower() \
                                 if isinstance(cmd_payload, dict) else ''
+                            if _is_app_auto_status_payload(cmd_payload):
+                                continue
+                            cmd = CommandPacket.from_dict(cmd_payload)
+                            if source == 'cry_sync':
+                                self._set_remote_cry_state(cmd)
+                                continue
                             is_app_source = source == 'app'
                             now = time.monotonic()
                             if not self._claim_control_owner(owner_id, is_app_source=is_app_source, now=now):
@@ -410,7 +438,7 @@ class CarServer:
                                 self.manual_override_until = now + self.manual_override_sec
                             elif now < self.manual_override_until:
                                 continue
-                            self.execute_command(CommandPacket.from_dict(cmd_payload))
+                            self.execute_command(cmd)
                     except Exception as e:
                         logger.warning('command error: %s', e)
             except websockets.ConnectionClosed:
@@ -456,8 +484,16 @@ class CarServer:
                         if restart_status == CameraRestartStatus.OK:
                             last_seq = -1
                         elif restart_status == CameraRestartStatus.FATAL:
-                            self._request_process_restart('camera restart failed')
-                            return
+                            logger.error('camera restart fatal; will retry after cooldown')
+                            # Don't kill the whole process — just wait and retry camera only.
+                            await asyncio.sleep(3.0)
+                            # Retry once more after a short wait.
+                            retry_status = await asyncio.to_thread(self.camera.restart)
+                            if retry_status == CameraRestartStatus.OK:
+                                last_seq = -1
+                                logger.info('camera recovered on retry')
+                            else:
+                                logger.error('camera still dead; will keep retrying on next stale cycle')
                     await asyncio.sleep(0.01)
                     continue
                 last_seq = seq
@@ -472,8 +508,9 @@ class CarServer:
             tasks = [
                 asyncio.create_task(recv_commands()),
                 asyncio.create_task(send_env()),
-                asyncio.create_task(send_video()),
             ]
+            if not data_only:
+                tasks.append(asyncio.create_task(send_video()))
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 exc = task.exception()
@@ -487,7 +524,7 @@ class CarServer:
             pass
         finally:
             if self._release_control_owner(owner_id):
-                self._safe_stop_motion('control owner disconnected')
+                self._safe_stop_motion('control owner disconnected', home_servos=False)
             logger.info('disconnected: %s', addr)
 
 def resolve_asr_url(cli_url):
@@ -526,6 +563,15 @@ def resolve_asr_url(cli_url):
     return 'auto'
 
 
+def _is_app_auto_status_payload(payload) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    source = str(payload.get('source', '') or '').strip().lower()
+    if source != 'app_auto':
+        return False
+    return as_bool(payload.get('tracking_mode', False))
+
+
 async def main(host, port, asr_url, mic_health_timeout, auth_token):
     validate_auth_config(host, auth_token, component="car websocket")
     if str(asr_url or "").strip().lower() == "auto":
@@ -542,13 +588,6 @@ async def main(host, port, asr_url, mic_health_timeout, auth_token):
     def request_shutdown():
         if not shutdown.done():
             shutdown.set_result(None)
-
-    def request_process_restart(reason):
-        restart_requested["value"] = True
-        restart_requested["reason"] = str(reason or "unknown")
-        loop.call_soon_threadsafe(request_shutdown)
-
-    server.set_process_restart_callback(request_process_restart)
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -583,7 +622,7 @@ if __name__ == '__main__':
     p.add_argument('--host', default=os.getenv('RASPBOT_CAR_BIND', '0.0.0.0'))
     p.add_argument('--port', type=int, default=int(os.getenv('RASPBOT_CAR_PORT', '5001')))
     p.add_argument('--asr-url', default=os.getenv('RASPBOT_ASR_URL', None))
-    p.add_argument('--mic-health-timeout', type=float, default=float(os.getenv('MIC_HEALTH_TIMEOUT', '2')))
+    p.add_argument('--mic-health-timeout', type=float, default=float(os.getenv('MIC_HEALTH_TIMEOUT', '5')))
     p.add_argument('--auth-token', default=os.getenv('RASPBOT_AUTH_TOKEN', ''))
     p.add_argument('--disable-mic-stream', action='store_true')
     args = p.parse_args()

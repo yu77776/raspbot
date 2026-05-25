@@ -42,6 +42,14 @@ def _safe_text(value):
     return str(value)
 
 
+def _env_float(name: str, default: float, min_value: float, max_value: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except Exception:
+        value = float(default)
+    return max(min_value, min(max_value, value))
+
+
 def _decode_escaped(text: str) -> str:
     """Ensure text is proper Unicode — decode \\uXXXX escapes if present."""
     t = str(text)
@@ -67,9 +75,12 @@ class Audio(ModuleBase):
         self.stop_event = threading.Event()
         self.stop_flag = threading.Event()
         self.tts_lock = threading.Lock()
+        self.tts_volume_ratio = _env_float('RASPBOT_TTS_VOLUME_RATIO', 1.0, 0.0, 1.0)
         self.cache_dir = os.path.join('/tmp', 'raspbot_audio_cache')
         self._playlist = []
+        self._display_names = {}
         self._playlist_index = -1
+        self._queue_generation = 0
         self.thread = None
         self.started = False
         logger.info('init done (audio=%s tts=%s driver=%s)', HAS_AUDIO, HAS_TTS, _TTS_DRIVER)
@@ -86,8 +97,26 @@ class Audio(ModuleBase):
         logger.info('volume=%s%%', v)
 
     def enqueue(self, kind, content):
+        if str(kind or '') == 'tts':
+            self.enqueue_tts_async(content)
+            return
+        self._append_queue(kind, content)
+
+    def _append_queue(self, kind, content, generation=None):
         with self.lock:
+            if generation is not None and generation != self._queue_generation:
+                return
             self.queue.append((kind, content))
+
+    def enqueue_tts_async(self, text):
+        with self.lock:
+            generation = self._queue_generation
+        thread = threading.Thread(
+            target=self._prefetch_tts,
+            args=(str(text or ''), generation),
+            daemon=True,
+        )
+        thread.start()
 
     def enqueue_song(self, song_cmd):
         filename = self.resolve_song(song_cmd)
@@ -95,7 +124,7 @@ class Audio(ModuleBase):
             return ''
         self.clear()
         self.enqueue('song', filename)
-        return filename
+        return self.display_name_for(filename)
 
     def resolve_song(self, filename):
         name = str(filename or '').strip()
@@ -119,6 +148,10 @@ class Audio(ModuleBase):
                 if name in playlist:
                     self._playlist_index = playlist.index(name)
                     return name
+                for entry in playlist:
+                    if self._display_names.get(entry, entry) == name:
+                        self._playlist_index = playlist.index(entry)
+                        return entry
                 return ''  # reject unknown names — prevent path traversal
 
             if self._playlist_index < 0 or self._playlist_index >= len(playlist):
@@ -137,9 +170,11 @@ class Audio(ModuleBase):
                 return list(self._playlist)
 
         new_list = self._scan_songs()
+        display_names = {name: self._display_name_for_entry(name) for name in new_list}
         with self.lock:
             if not self._playlist:
                 self._playlist = new_list
+                self._display_names = display_names
                 if self._playlist_index >= len(self._playlist):
                     self._playlist_index = -1
             return list(self._playlist)
@@ -159,11 +194,33 @@ class Audio(ModuleBase):
     def refresh_playlist(self):
         """Force rescan of songs directory. Call after syncing new files."""
         new_list = self._scan_songs()
+        display_names = {name: self._display_name_for_entry(name) for name in new_list}
         with self.lock:
             self._playlist = new_list
+            self._display_names = display_names
             if self._playlist_index >= len(self._playlist):
                 self._playlist_index = -1
             return list(self._playlist)
+
+    def display_name_for(self, filename):
+        with self.lock:
+            mapped = self._display_names.get(filename)
+        return mapped or self._display_name_for_entry(filename)
+
+    def _display_name_for_entry(self, filename):
+        name = str(filename or "")
+        for encoding in ("gb18030", "gbk"):
+            try:
+                repaired = name.encode(encoding, errors="surrogateescape").decode("utf-8")
+            except Exception:
+                continue
+            if repaired:
+                return repaired
+        try:
+            repaired = os.fsencode(name).decode("utf-8")
+        except Exception:
+            return name
+        return repaired if repaired else name
 
     def _wait_until_finished(self):
         while pygame.mixer.music.get_busy():
@@ -264,7 +321,12 @@ class Audio(ModuleBase):
                     await communicate.save(tmp_path)
                 asyncio.run(_synth())
                 if HAS_AUDIO:
+                    with self.lock:
+                        vol = self.volume
+                    tts_volume = max(0.0, min(1.0, (vol / 100.0) * self.tts_volume_ratio))
+                    logger.info('tts playback volume=%d%% ratio=%.2f effective=%.2f', vol, self.tts_volume_ratio, tts_volume)
                     pygame.mixer.music.load(tmp_path)
+                    pygame.mixer.music.set_volume(tts_volume)
                     pygame.mixer.music.play()
                     while pygame.mixer.music.get_busy():
                         time.sleep(0.05)
@@ -280,6 +342,58 @@ class Audio(ModuleBase):
             except Exception:
                 pass
 
+    def _prefetch_tts(self, text, generation):
+        if not HAS_TTS:
+            self._append_queue('tts_sync', text, generation=generation)
+            return
+        text = _decode_escaped(text)
+        voice = _ZH_VOICE if _CJK_RE.search(text) else _EN_VOICE
+        try:
+            os.makedirs(self.cache_dir, exist_ok=True)
+            digest = hashlib.sha1(f'{voice}\0{text}'.encode('utf-8', errors='ignore')).hexdigest()[:16]
+            path = os.path.join(self.cache_dir, f'tts_{digest}.mp3')
+            if not os.path.exists(path) or os.path.getsize(path) <= 0:
+                tmp_path = os.path.join(self.cache_dir, f'tts_{digest}.{threading.get_ident()}.tmp')
+                logger.info('tts prefetch start voice=%s: %s', voice, _safe_text(text[:80]))
+                with self.tts_lock:
+                    async def _synth():
+                        communicate = edge_tts.Communicate(text, voice)
+                        await communicate.save(tmp_path)
+                    asyncio.run(_synth())
+                    os.replace(tmp_path, path)
+                logger.info('tts prefetch done')
+            self._append_queue('tts_file', path, generation=generation)
+        except Exception as e:
+            logger.warning('tts prefetch error, fallback sync: %s', _safe_text(e))
+            self._append_queue('tts_sync', text, generation=generation)
+            try:
+                if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            except Exception:
+                pass
+
+    def _play_tts_file(self, path):
+        if not HAS_AUDIO:
+            return
+        if not path or not os.path.exists(path):
+            logger.warning('tts file missing: %s', _safe_text(path))
+            return
+        try:
+            with self.lock:
+                vol = self.volume
+            tts_volume = max(0.0, min(1.0, (vol / 100.0) * self.tts_volume_ratio))
+            logger.info('tts playback volume=%d%% ratio=%.2f effective=%.2f', vol, self.tts_volume_ratio, tts_volume)
+            pygame.mixer.music.load(path)
+            pygame.mixer.music.set_volume(tts_volume)
+            pygame.mixer.music.play()
+            while pygame.mixer.music.get_busy():
+                if self.stop_flag.is_set():
+                    pygame.mixer.music.stop()
+                    break
+                time.sleep(0.05)
+        except Exception as e:
+            logger.warning('tts playback error: %s', _safe_text(e))
+
     def _run(self):
         while not self.stop_event.is_set():
             task = None
@@ -291,7 +405,11 @@ class Audio(ModuleBase):
                 kind, content = task
                 if kind == 'song':
                     self._play_file(content)
+                elif kind == 'tts_file':
+                    self._play_tts_file(content)
                 elif kind == 'tts':
+                    self._tts(content)
+                elif kind == 'tts_sync':
                     self._tts(content)
             else:
                 time.sleep(0.1)
@@ -299,6 +417,7 @@ class Audio(ModuleBase):
     def clear(self):
         self.stop_flag.set()
         with self.lock:
+            self._queue_generation += 1
             self.queue.clear()
         with self.tts_lock:
             if HAS_AUDIO:

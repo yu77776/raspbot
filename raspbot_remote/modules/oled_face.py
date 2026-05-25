@@ -53,10 +53,12 @@ class FaceEngine:
         self.font_cn_name = "unset"
         self.font_en_name = "unset"
 
-        self.face_state = "idle"  # idle | tracking | turning | sleeping
+        self.face_state = "idle"  # idle | tracking | searching | sleeping
+        self.mode_label = "AUTO"
         self.alarm = ""
         self.env_data = {}
         self.eye_offset = 0
+        self._searching_since = None  # auto-transition to sleeping after timeout
 
         self._event = None
         self._event_lock = threading.Lock()
@@ -168,6 +170,36 @@ class FaceEngine:
             out = candidate
         return out
 
+    def _repair_mojibake(self, text):
+        value = str(text or "")
+        if not value:
+            return ""
+        if any("\u4e00" <= ch <= "\u9fff" for ch in value):
+            return value
+        suspicious = sum(1 for ch in value if ch in "ÃÂâ€çéèåæäöüïðñ")
+        if suspicious <= 0:
+            return value
+        for encoding in ("latin1", "cp1252"):
+            try:
+                repaired = value.encode(encoding).decode("utf-8")
+            except Exception:
+                continue
+            if any("\u4e00" <= ch <= "\u9fff" for ch in repaired):
+                return repaired
+        return value
+
+    def _sanitize_alarm_text(self, text):
+        cleaned = []
+        for ch in str(text or ""):
+            if ch == "°":
+                continue
+            if ch == "±":
+                cleaned.append("+/-")
+                continue
+            if ord(ch) < 128 and (ch.isalnum() or ch in " .:/_+-"):
+                cleaned.append(ch)
+        return " ".join("".join(cleaned).split()) or "ALERT"
+
     def _draw_text_center(self, draw, y, text, font=None):
         text = str(text)
         tw = self._text_width_mixed(draw, text, font)
@@ -184,6 +216,11 @@ class FaceEngine:
     def set_state(self, state):
         with self.lock:
             self.face_state = str(state or "idle")
+
+    def set_mode(self, mode):
+        label = "AUTO" if str(mode or "").strip().lower() in {"auto", "tracking", "app_auto"} else "MANUAL"
+        with self.lock:
+            self.mode_label = label
 
     def set_alarm(self, msg):
         with self.lock:
@@ -206,6 +243,22 @@ class FaceEngine:
         with self._event_lock:
             self._event = OledEvent(str(kind or "sensor"), value, float(duration))
 
+    def clear_event(self, kind=None):
+        with self._event_lock:
+            if self._event is None:
+                return
+            if kind is None or self._event.kind == str(kind):
+                self._event = None
+
+    def _draw_mode_badge(self, draw):
+        with self.lock:
+            label = self.mode_label
+        if not label:
+            return
+        text = "A" if label == "AUTO" else "M"
+        draw.rectangle([0, 0, 12, 8], outline=1)
+        draw.text((4, -2), text, font=self.font_en, fill=1)
+
     # Event queue
     def _pop_event(self):
         with self._event_lock:
@@ -214,6 +267,9 @@ class FaceEngine:
                 self._event = None
                 return None
             return ev
+
+    def _event_overlays_alarm(self, ev):
+        return bool(ev and ev.kind == "volume")  # volume composites with alarm
 
     # Faces
     def _draw_face_idle(self, tick):
@@ -236,43 +292,36 @@ class FaceEngine:
 
         draw.ellipse([lx - 14, 16 - ry, lx + 14, 16 + ry], fill=1)
         draw.ellipse([rx - 14, 16 - ry, rx + 14, 16 + ry], fill=1)
+        self._draw_mode_badge(draw)
         self._display(image)
 
     def _draw_face_tracking(self, tick):
         del tick
         image = self._new_frame()
         draw = ImageDraw.Draw(image)
-
         with self.lock:
             offset = self.eye_offset
-
-        lx = 38 + offset
-        rx = 90 + offset
-
-        draw.ellipse([lx - 14, 6, lx + 14, 26], outline=1, width=1)
-        draw.ellipse([rx - 14, 6, rx + 14, 26], outline=1, width=1)
-
-        pupil_bias = offset // 2
-        draw.ellipse([lx - 5 + pupil_bias, 11, lx + 5 + pupil_bias, 21], fill=1)
-        draw.ellipse([rx - 5 + pupil_bias, 11, rx + 5 + pupil_bias, 21], fill=1)
-
+        lx, rx = 38 + offset, 90 + offset
+        # Solid round eyes — happy, locked on target.
+        draw.ellipse([lx - 14, 6, lx + 14, 26], fill=1)
+        draw.ellipse([rx - 14, 6, rx + 14, 26], fill=1)
+        self._draw_mode_badge(draw)
         self._display(image)
 
-    def _draw_face_turning(self, tick):
+    def _draw_face_searching(self, tick):
+        del tick
         image = self._new_frame()
         draw = ImageDraw.Draw(image)
-        lx, rx = 38, 90
-        angle = (tick * 300.0) % 360.0
-
-        for cx in (lx, rx):
-            for i in range(0, 360, 30):
-                a = math.radians(angle + i)
-                r = 4.0 + (i / 360.0) * 8.0
-                x = cx + int(r * math.cos(a))
-                y = 16 + int(r * math.sin(a))
-                draw.point((x, y), fill=1)
-            draw.ellipse([cx - 13, 3, cx + 13, 29], outline=1, width=1)
-
+        with self.lock:
+            offset = self.eye_offset
+        lx, rx = 38 + offset, 90 + offset
+        # Hollow eyes — pupil follows actual pan servo, scanning for baby.
+        draw.ellipse([lx - 14, 6, lx + 14, 26], outline=1, width=1)
+        draw.ellipse([rx - 14, 6, rx + 14, 26], outline=1, width=1)
+        pupil = offset // 2
+        draw.ellipse([lx - 4 + pupil, 11, lx + 4 + pupil, 21], fill=1)
+        draw.ellipse([rx - 4 + pupil, 11, rx + 4 + pupil, 21], fill=1)
+        self._draw_mode_badge(draw)
         self._display(image)
 
     def _draw_face_sleeping(self, tick):
@@ -298,15 +347,19 @@ class FaceEngine:
         vol = int(ev.value or 0)
         vol = max(0, min(100, vol))
 
-        self._draw_text_center(draw, 0, "VOL", self.font_en)
+        # Compact layout for 128x32: title + bar + pct, vertically stacked.
+        self._draw_text_center(draw, -2, "VOL", self.font_en)
 
-        bar_x, bar_y, bar_w, bar_h = 14, 16, 100, 12
+        bar_x, bar_y, bar_w, bar_h = 14, 9, 100, 7
         draw.rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h], outline=1)
         fill_w = int(bar_w * vol / 100)
         if fill_w > 0:
             draw.rectangle([bar_x + 1, bar_y + 1, bar_x + fill_w, bar_y + bar_h - 1], fill=1)
 
-        self._draw_text_center(draw, 16, f"{vol}%", self.font_en)
+        pct_text = f"{vol}%"
+        tw = self._text_width_mixed(draw, pct_text, self.font_en)
+        x = max(0, (128 - tw) // 2)
+        self._draw_text_mixed(draw, x, 17, pct_text, font=self.font_en, fill=1)
         self._display(image)
 
     def _draw_note(self, draw, cx, cy):
@@ -319,14 +372,24 @@ class FaceEngine:
         draw = ImageDraw.Draw(image)
         t = ev.elapsed
 
-        for i in range(3):
-            x = 25 + i * 35
-            y = 14 + int(5 * math.sin(t * 3 + i * 1.5))
+        for i in range(4):
+            x = 18 + i * 30
+            y = 8 + int(3 * math.sin(t * 4 + i * 1.4))
             self._draw_note(draw, x, y)
 
-        name = str(ev.value or "")
+        value = ev.value if isinstance(ev.value, dict) else {}
+        name = self._repair_mojibake(value.get("name", "") if value else ev.value or "")
         if name:
-            self._draw_text_center(draw, 22, self._fit_text(draw, name, font=self.font_en), self.font_en)
+            max_width = 124
+            text_font = self.font_cn if any(ord(ch) > 127 for ch in name) else self.font_en
+            if self._text_width_mixed(draw, name, text_font) <= max_width:
+                visible = name
+            else:
+                padded = f"{name}   "
+                start = int(t * 2.5) % max(1, len(padded))
+                rotated = padded[start:] + padded[:start]
+                visible = self._fit_text(draw, rotated, max_width=max_width, font=text_font)
+            self._draw_text_center(draw, 20, visible, text_font)
 
         self._display(image)
 
@@ -370,21 +433,43 @@ class FaceEngine:
 
         self._display(image)
 
-    def _draw_alarm_flash(self, msg, elapsed):
-        show_text = int(elapsed / 0.3) % 2 == 0
-
+    def _draw_alarm_with_volume(self, alarm_msg, tick, ev):
+        """Composite: slim alarm banner at top, volume bar below."""
         image = self._new_frame()
         draw = ImageDraw.Draw(image)
-        msg = self._fit_text(draw, str(msg or "ALERT"), font=self.font_cn)
 
+        # Top 8px: compact alarm indicator — flash on/off
+        show = int(tick / 0.3) % 2 == 0
+        msg = self._fit_text(draw, self._sanitize_alarm_text(alarm_msg), font=self.font_en)
+        if show:
+            self._draw_text_center(draw, -2, f"! {msg}", self.font_en)
+        else:
+            draw.rectangle([0, 0, 127, 8], fill=1)
+            self._draw_text_center_inv(draw, -2, f"! {msg}", self.font_en)
+
+        # Bottom: slim volume bar, no percentage to keep alarm readable
+        vol = int(ev.value or 0)
+        vol = max(0, min(100, vol))
+        bar_x, bar_y, bar_w, bar_h = 14, 13, 100, 7
+        draw.rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h], outline=1)
+        fill_w = int(bar_w * vol / 100)
+        if fill_w > 0:
+            draw.rectangle([bar_x + 1, bar_y + 1, bar_x + fill_w, bar_y + bar_h - 1], fill=1)
+
+        self._display(image)
+
+    def _draw_alarm_flash(self, msg, elapsed):
+        show_text = int(elapsed / 0.3) % 2 == 0
+        image = self._new_frame()
+        draw = ImageDraw.Draw(image)
+        msg = self._fit_text(draw, self._sanitize_alarm_text(msg), font=self.font_en)
         if show_text:
             self._draw_text_center(draw, 2, "!! WARNING !!", self.font_en)
-            self._draw_text_center(draw, 18, msg, self.font_cn)
+            self._draw_text_center(draw, 18, msg, self.font_en)
         else:
             draw.rectangle([0, 0, 127, 31], fill=1)
             self._draw_text_center_inv(draw, 2, "!! WARNING !!", self.font_en)
-            self._draw_text_center_inv(draw, 18, msg, self.font_cn)
-
+            self._draw_text_center_inv(draw, 18, msg, self.font_en)
         self._display(image)
 
     _EVENT_DRAWERS = {
@@ -404,23 +489,34 @@ class FaceEngine:
 
     def _run(self):
         tick = 0.0
+        SEARCH_TIMEOUT = 20.0
         while not self.stop_event.is_set():
             try:
-                # Priority: alarm > event > face_state
                 with self.lock:
                     alarm = self.alarm
                     state = self.face_state
 
-                if alarm:
+                # Auto-transition: searching too long → sleeping
+                if state == "searching":
+                    if self._searching_since is None:
+                        self._searching_since = time.monotonic()
+                    elif time.monotonic() - self._searching_since > SEARCH_TIMEOUT:
+                        state = "sleeping"
+                else:
+                    self._searching_since = None
+
+                ev = self._pop_event()
+                if alarm and ev and ev.kind == "volume":
+                    self._draw_alarm_with_volume(alarm, tick, ev)
+                elif alarm:
                     self._draw_alarm_flash(alarm, tick)
                 else:
-                    ev = self._pop_event()
                     if ev:
                         self._draw_event(ev)
                     elif state == "tracking":
                         self._draw_face_tracking(tick)
-                    elif state == "turning":
-                        self._draw_face_turning(tick)
+                    elif state == "searching":
+                        self._draw_face_searching(tick)
                     elif state == "sleeping":
                         self._draw_face_sleeping(tick)
                     else:

@@ -40,7 +40,7 @@ class MPU6050(ModuleBase):
         calibrate_timeout=20.0,
         calibrate_window=2.5,
         calibration_path=None,
-        warm_calibrate_timeout=4.0,
+        warm_calibrate_timeout=8.0,
     ):
         self.addr = int(addr)
         self.bus_id = int(bus_id)
@@ -402,7 +402,7 @@ class MPU6050(ModuleBase):
                 logger.info('starting background warm calibration')
                 ok = self.calibrate(self.warm_calibrate_timeout, accept_timeout=True)
                 if not ok:
-                    logger.info('warm calibration skipped (no stable window); using cached bias')
+                    logger.debug('warm calibration skipped (no stable window); using cached bias')
 
         error_count = 0
         prev_t = time.monotonic()

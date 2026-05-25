@@ -76,14 +76,55 @@ def is_ws_authorized(ws, expected_token: Optional[str]) -> bool:
     return hmac.compare_digest(auth_token_from_ws(ws), token)
 
 
+def cliff_level(track) -> int:
+    """Progressive cliff level from 4-channel track sensors.
+
+    0 = safe (0-1 dark)
+    1 = warning (≥2 dark, or both front sensors dark)
+    2 = danger (≥3 dark)
+    3 = cliff (all 4 dark)
+    """
+    if not isinstance(track, list) or len(track) < 4:
+        return 0
+    try:
+        values = [int(v) for v in track[:4]]
+    except (TypeError, ValueError):
+        return 0
+    dark = sum(1 for v in values if v == 0)
+    front_both_dark = values[0] == 0 and values[1] == 0
+    if dark >= 4:
+        return 3
+    if dark >= 3:
+        return 2
+    if dark >= 2 or front_both_dark:
+        return 1
+    return 0
+
+
+def cliff_direction(pitch, roll, imu_healthy,
+                    pitch_down_deg=-8.0, pitch_up_deg=8.0, roll_tilt_deg=10.0) -> str:
+    """Classify cliff danger direction from IMU attitude angles (degrees).
+
+    Returns:
+        "forward"  — nose down, danger ahead → escape backward
+        "rear"     — nose up, danger behind → escape forward
+        "side"     — lateral tilt → stop
+        "suspended"— level but sensors dark → being picked up
+    """
+    if not imu_healthy:
+        return "suspended"
+    if abs(roll) > abs(pitch) and abs(roll) > roll_tilt_deg:
+        return "side"
+    if pitch < pitch_down_deg:
+        return "forward"
+    if pitch > pitch_up_deg:
+        return "rear"
+    return "suspended"
+
+
 def is_cliff_track(track) -> bool:
     """Return True if all four track sensors report cliff (value == 0)."""
-    if not isinstance(track, list) or len(track) < 4:
-        return False
-    try:
-        return all(int(v) == 0 for v in track[:4])
-    except (TypeError, ValueError):
-        return False
+    return cliff_level(track) >= 3
 
 
 def clamp_int(value: Any, min_v: int, max_v: int, default: int) -> int:
@@ -111,6 +152,8 @@ class CommandPacket:
     speed: int = 80
     left_speed: int = 80
     right_speed: int = 80
+    source: str = ""
+    tracking_mode: bool = False
     audio_volume: Optional[int] = None
     detecting: bool = False
     play_song: str = ""
@@ -139,6 +182,8 @@ class CommandPacket:
             speed=speed,
             left_speed=clamp_int(payload.get("left_speed", speed), 0, 255, speed),
             right_speed=clamp_int(payload.get("right_speed", speed), 0, 255, speed),
+            source=str(payload.get("source", "") or "").strip(),
+            tracking_mode=as_bool(payload.get("tracking_mode", False)),
             audio_volume=None if audio_volume is None else clamp_int(audio_volume, 0, 100, 100),
             detecting=as_bool(payload.get("detecting", False)),
             play_song=str(payload.get("play_song", "") or "").strip(),
@@ -187,6 +232,10 @@ class EnvPacket:
     alarm: str
     imu: Optional[ImuPacket]
     fps: int
+    pcf8591_ok: bool = True
+    battery_status: str = "OK"
+    cliff_level: int = 0
+    cliff_direction: str = ""
 
     def __post_init__(self):
         if not isinstance(self.track, list) or len(self.track) < 4:
@@ -201,6 +250,15 @@ class EnvPacket:
             object.__setattr__(self, 'track', normalized)
         if not isinstance(self.alarm, str):
             object.__setattr__(self, 'alarm', str(self.alarm or ''))
+        object.__setattr__(self, 'pcf8591_ok', as_bool(self.pcf8591_ok))
+        if not isinstance(self.battery_status, str):
+            object.__setattr__(self, 'battery_status', str(self.battery_status or 'OK'))
+        try:
+            object.__setattr__(self, 'cliff_level', int(self.cliff_level))
+        except (TypeError, ValueError):
+            object.__setattr__(self, 'cliff_level', 0)
+        if not isinstance(self.cliff_direction, str):
+            object.__setattr__(self, 'cliff_direction', str(self.cliff_direction or ''))
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -217,4 +275,8 @@ class EnvPacket:
             "alarm": self.alarm,
             "imu": self.imu.to_dict() if self.imu else None,
             "fps": self.fps,
+            "pcf8591_ok": self.pcf8591_ok,
+            "battery_status": self.battery_status,
+            "cliff_level": self.cliff_level,
+            "cliff_direction": self.cliff_direction,
         }

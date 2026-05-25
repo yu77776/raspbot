@@ -24,6 +24,7 @@ class EnvSampler:
         knob_volume_enabled: bool = True,
         knob_volume_deadband: int = 3,
         knob_volume_after_app_grace_sec: float = 1.5,
+        knob_volume_callback: Optional[Callable[[int], None]] = None,
     ):
         self.pcf8591 = pcf8591
         self.ultrasonic = ultrasonic
@@ -37,6 +38,7 @@ class EnvSampler:
         self.knob_volume_enabled = bool(knob_volume_enabled)
         self.knob_volume_deadband = int(max(0, min(20, int(knob_volume_deadband))))
         self.knob_volume_after_app_grace_sec = float(knob_volume_after_app_grace_sec)
+        self.knob_volume_callback = knob_volume_callback
         self._last_applied_knob_volume: Optional[int] = None
         self._last_knob_volume: Optional[int] = None
         self._app_volume_overrides_knob = False
@@ -53,8 +55,10 @@ class EnvSampler:
         env = self.pcf8591.get_data()
         dist = self.ultrasonic.get_distance()
         track = self.infrared.get_data().get("track", [1, 1, 1, 1])
+        pcf8591_ok = bool(env.get("pcf8591_ok", True))
         volume = int(env.get("volume", 0))
-        self._apply_knob_volume(volume)
+        if pcf8591_ok:
+            self._apply_knob_volume(volume)
         applied_volume = int(getattr(self.audio, "volume", volume))
 
         crying, cry_score = False, 0
@@ -64,16 +68,19 @@ class EnvSampler:
         if remote_cry_score is not None:
             cry_score = remote_cry_score
 
+        imu_packet = self._sample_imu()
         now = time.monotonic()
+        undervoltage = _check_undervoltage()
         alarms = self.care_policy.build_alarm_tokens(
             env=env,
             dist_cm=round(float(dist), 1),
             track=track,
             crying=crying,
             cry_score=cry_score,
-            undervoltage=_check_undervoltage(),
+            undervoltage=undervoltage,
             remote_alarm=remote_alarm or "",
             now=now,
+            imu=imu_packet,
         )
 
         return EnvPacket(
@@ -88,8 +95,12 @@ class EnvSampler:
             dist_cm=round(float(dist), 1),
             track=track,
             alarm="+".join(alarms),
-            imu=self._sample_imu(),
+            imu=imu_packet,
             fps=int(self.camera.get_fps()),
+            pcf8591_ok=pcf8591_ok,
+            battery_status="LOW" if undervoltage else "OK",
+            cliff_level=self.care_policy.cliff_level,
+            cliff_direction=self.care_policy.cliff_direction,
         )
 
     def baby_tts_for_tokens(self, tokens, now: Optional[float] = None) -> str:
@@ -135,6 +146,8 @@ class EnvSampler:
                 return
         self._last_applied_knob_volume = volume
         self.audio.set_volume(volume)
+        if self.knob_volume_callback is not None:
+            self.knob_volume_callback(volume)
 
 
 _uv_lock = threading.Lock()

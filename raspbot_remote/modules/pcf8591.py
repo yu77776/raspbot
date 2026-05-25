@@ -32,6 +32,7 @@ class PCF8591(ModuleBase):
             'smoke': 0,
             'volume': 0,
             'smoke_alarm': False,
+            'pcf8591_ok': False,
         }
         # On this car, warming the temperature sensor makes AIN1 decrease.
         # Use the measured B-value NTC model:
@@ -39,7 +40,7 @@ class PCF8591(ModuleBase):
         # The YL-40 temperature probe on this car behaves like a 100K NTC.
         # Around raw=233 it should read room temperature (~23C), not ~12C.
         self.adc_vref = float(os.getenv('RASPBOT_ADC_VREF', '5.0'))
-        self.temp_series_ohm = float(os.getenv('RASPBOT_TEMP_SERIES_OHM', '10000'))
+        self.temp_series_ohm = float(os.getenv('RASPBOT_TEMP_SERIES_OHM', '15600'))
         self.temp_nominal_ohm = float(os.getenv('RASPBOT_TEMP_NOMINAL_OHM', '100000'))
         self.temp_nominal_c = float(os.getenv('RASPBOT_TEMP_NOMINAL_C', '25.0'))
         self.temp_beta = float(os.getenv('RASPBOT_TEMP_BETA', '3950'))
@@ -61,6 +62,8 @@ class PCF8591(ModuleBase):
         self.enabled = False
         self.thread = None
         self.started = False
+        self._read_error_count = 0
+        self._last_warning_ts = 0.0
         if HAS_I2C:
             try:
                 self.bus = smbus2.SMBus(1)
@@ -76,8 +79,12 @@ class PCF8591(ModuleBase):
                 self.bus.read_byte(self.addr)
                 return self.bus.read_byte(self.addr)
         except Exception as exc:
-            logger.warning('[PCF8591] read ch=%s failed: %s', ch, exc)
-            return 0
+            self._read_error_count += 1
+            now = time.monotonic()
+            if self._read_error_count == 1 or now - self._last_warning_ts >= 2.0:
+                logger.warning('[PCF8591] read ch=%s failed: %s', ch, exc)
+                self._last_warning_ts = now
+            return None
 
     def _light_convert(self, adc):
         adc = int(max(0, min(255, int(adc))))
@@ -114,8 +121,12 @@ class PCF8591(ModuleBase):
         samples = int(max(1, int(samples)))
         values = []
         for _ in range(samples):
-            values.append(self._read(channel))
+            value = self._read(channel)
+            if value is not None:
+                values.append(value)
             time.sleep(float(delay))
+        if not values:
+            raise RuntimeError('PCF8591 temperature channel read failed')
         raw = int(round(sum(values) / len(values)))
         result = self.temp_diagnostics_from_adc(raw)
         result['channel'] = channel
@@ -151,8 +162,12 @@ class PCF8591(ModuleBase):
         samples = int(max(1, int(samples)))
         values = []
         for _ in range(samples):
-            values.append(self._read(channel))
+            value = self._read(channel)
+            if value is not None:
+                values.append(value)
             time.sleep(float(delay))
+        if not values:
+            raise RuntimeError('PCF8591 battery channel read failed')
         raw = int(round(sum(values) / len(values)))
         result = self.battery_health_from_adc(raw)
         result['channel'] = channel
@@ -162,15 +177,17 @@ class PCF8591(ModuleBase):
     def _run(self):
         error_count = 0
         while not self.stop_event.is_set():
-            try:
-                channels = [self._read(ch) for ch in range(4)]
-            except Exception as e:
+            channels = [self._read(ch) for ch in range(4)]
+            if any(value is None for value in channels):
                 error_count += 1
                 if error_count == 1 or error_count % 20 == 0:
-                    logger.warning('I2C read error: %s', e)
+                    logger.warning('I2C read incomplete; keeping last good analog values')
+                with self.lock:
+                    self.data['pcf8591_ok'] = False
                 time.sleep(0.5)
                 continue
             error_count = 0
+            self._read_error_count = 0
             light = channels[0]
             temp = channels[1]
             smoke = channels[2]
@@ -186,6 +203,7 @@ class PCF8591(ModuleBase):
                     'volume': volume_percent,
                     'volume_raw': volume_raw,
                     'smoke_alarm': smoke > self.threshold,
+                    'pcf8591_ok': True,
                 }
             time.sleep(0.5)
 
