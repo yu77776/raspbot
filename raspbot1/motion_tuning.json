@@ -21,7 +21,7 @@
   "enable_motor_control": true,
   "body_kp": 0.1,
   "body_kd_imu": 0.01,
-  "body_dead_zone": 5.0,
+  "body_dead_zone": 1.0,
   "body_speed_min": 40,
   "body_speed_max": 50,
   "body_out_max": 100.0,
@@ -31,24 +31,26 @@
   "enable_distance_follow": true,
 
 
-  "follow_dist_near": 28.0,
-  "follow_dist_far": 45.0,
-  "follow_hysteresis": 2.0,
-  "follow_speed_kp": 1,
-  "follow_speed_min": 40,
-  "follow_speed_max": 50,
+  "follow_dist_near": 25.0,
+  "follow_dist_far": 38.0,
+  "follow_hysteresis": 1.0,
+
+  "follow_speed_kp": 1.2,
+  "follow_speed_min": 50,
+  "follow_speed_max": 70,
   "follow_back_speed_max": 40,
-  "follow_servo_center_deg": 12.0,
-  "follow_min_action_sec": 0.12,
-  "follow_max_action_sec": 0.28,
-  "follow_cooldown_sec": 0.7,
-  "obstacle_cm": 30.0,
+  
+  "follow_servo_center_deg": 20.0,
+  "follow_min_action_sec": 0.1,
+  "follow_max_action_sec": 0.25,
+  "follow_cooldown_sec": 0.1,
+  "obstacle_cm": 10.0,
 
 
   "scan_speed_deg_s": 20.0,
   "scan_range_min": 5.0,
   "scan_range_max": 175.0,
-  "scan_timeout": 999.0,
+  "scan_timeout": 20.0,
 
   "debug": true,
   "debug_interval": 0.2

@@ -1,15 +1,10 @@
 """Application entry for PC websocket client."""
 import argparse
-import asyncio
 import os
-import time
 
 from .logger_setup import setup_logger
-from .client import PCClientWS
-from .voice_cry_bridge import CryStateStore
-from agent_modules.discovery import DEFAULT_DISCOVERY_PORT, discover_car
-from .settings import DEFAULT_CAR_HOST, DEFAULT_CAR_PORT
-from .protocol import BackgroundService, append_auth_token_to_uri, resolve_auth_token
+from .discovery import DEFAULT_DISCOVERY_PORT
+from coordinator.system_coordinator import SystemCoordinator
 
 logger = setup_logger('raspbot.pc')
 
@@ -59,15 +54,11 @@ def parse_args():
         default=os.getenv('BAIDU_EMIT_PARTIAL', '').strip().lower() in {'1', 'true', 'yes', 'on'},
         help='Emit Baidu MID_TEXT partial text. Default is FIN_TEXT only for safer robot commands.',
     )
-    p.add_argument('--disable-app-gateway', action='store_true', help='Disable embedded App gateway server')
-    p.add_argument('--app-gateway-host', default=os.getenv('APP_GATEWAY_HOST', '0.0.0.0'))
-    p.add_argument('--app-gateway-port', type=int, default=int(os.getenv('APP_GATEWAY_PORT', '7000')))
-    p.add_argument('--app-gateway-reconnect-delay', type=float, default=float(os.getenv('APP_GATEWAY_RECONNECT_DELAY', '1.5')))
     p.add_argument(
-        '--enable-webrtc-bridge',
+        '--disable-webrtc-bridge',
         action='store_true',
-        default=os.getenv('RASPBOT_ENABLE_WEBRTC_BRIDGE', '').strip().lower() in {'1', 'true', 'yes', 'on'},
-        help='Enable cloud WebRTC bridge for App access without ZeroTier.',
+        default=os.getenv('RASPBOT_ENABLE_WEBRTC_BRIDGE', '1').strip().lower() in {'0', 'false', 'no', 'off'},
+        help='Disable cloud WebRTC bridge for App access.',
     )
     p.add_argument('--webrtc-signaling-url', default=os.getenv('RASPBOT_WEBRTC_SIGNALING_URL', 'ws://47.108.164.190:8765/pc_room'))
     p.add_argument('--webrtc-stun-url', default=os.getenv('RASPBOT_STUN_URL', 'stun:47.108.164.190:3478'))
@@ -80,131 +71,8 @@ def parse_args():
 
 def main():
     args = parse_args()
-    host = (args.host or '').strip()
-    port = int(args.port or 0)
-
-    if not host and not args.no_discover:
-        logger.info('listening udp://0.0.0.0:%s timeout=%.1fs', args.discover_port, args.discover_timeout)
-        car = discover_car(timeout=args.discover_timeout, port=args.discover_port)
-        if car:
-            host = car.ip
-            port = car.port
-            logger.info('found %s at %s server_running=%s', car.name, car.uri, car.server_running)
-        else:
-            logger.warning('not found, fallback to default host')
-
-    if not host:
-        host = DEFAULT_CAR_HOST
-    if not port:
-        port = DEFAULT_CAR_PORT
-
-    auth_token = resolve_auth_token(args.auth_token)
-    uri = append_auth_token_to_uri(f'ws://{host}:{port}', auth_token)
-    client = PCClientWS(
-        uri=uri,
-        model_path=args.model,
-        yolo_device=args.yolo_device,
-        yolo_disable_cudnn=not args.yolo_use_cudnn,
-        tuning_path=args.tuning or None,
-    )
-
-    asr_runner = None
-    app_gateway_runner = None
-    webrtc_runner = None
-    cry_state = CryStateStore()
-
-    if not args.disable_app_gateway:
-        from .app_gateway import AppGateway, GatewayConfig
-        gateway_cfg = GatewayConfig(
-            listen_host=args.app_gateway_host,
-            listen_port=args.app_gateway_port,
-            car_host=host,
-            car_port=port,
-            reconnect_delay=args.app_gateway_reconnect_delay,
-            cry_state=cry_state,
-            auth_token=auth_token,
-        )
-        app_gateway_runner = BackgroundService(lambda: AppGateway(gateway_cfg), name='raspbot.appgw')
-        app_gateway_runner.start()
-        time.sleep(0.2)
-        if app_gateway_runner.error is not None:
-            logger.error('embedded server failed: %s', app_gateway_runner.error)
-            logger.warning('tip: stop existing gateway process or use --disable-app-gateway')
-        else:
-            logger.info('embedded server started at ws://%s:%s -> %s', args.app_gateway_host, args.app_gateway_port, uri)
-
-    if not args.disable_asr:
-        from .asr_server import AsrServer, ServerConfig
-
-        asr_cfg = ServerConfig(
-            host=args.asr_host,
-            port=args.asr_port,
-            path=args.asr_path,
-            window_sec=args.asr_window_sec,
-            step_sec=args.asr_step_sec,
-            silence_rms=args.asr_silence_rms,
-            baidu_appid=args.baidu_appid,
-            baidu_api_key=args.baidu_api_key,
-            baidu_secret_key=args.baidu_secret_key,
-            baidu_access_token=args.baidu_access_token,
-            baidu_url=args.baidu_url,
-            baidu_dev_pid=args.baidu_dev_pid,
-            baidu_cuid=args.baidu_cuid,
-            baidu_lm_id=args.baidu_lm_id,
-            baidu_user=args.baidu_user,
-            baidu_frame_ms=args.baidu_frame_ms,
-            baidu_emit_partial=args.baidu_emit_partial,
-            on_text=client.on_asr_text,
-            on_cry_state=cry_state.update_from_ratio,
-        )
-        asr_runner = BackgroundService(lambda: AsrServer(asr_cfg), name='raspbot.asr')
-        asr_runner.start()
-        time.sleep(0.3)
-        if asr_runner.error is not None:
-            logger.error('embedded server failed: %s', asr_runner.error)
-            logger.warning('tip: stop existing asr_server.py or use --disable-asr')
-        else:
-            logger.info('embedded server started at ws://%s:%s%s', args.asr_host, args.asr_port, args.asr_path)
-
-    if args.enable_webrtc_bridge:
-        from .webrtc_bridge import WebRtcBridge, WebRtcBridgeConfig
-
-        webrtc_cfg = WebRtcBridgeConfig(
-            signaling_url=args.webrtc_signaling_url,
-            car_host=host,
-            car_port=port,
-            stun_url=args.webrtc_stun_url,
-            turn_url=args.webrtc_turn_url,
-            turn_username=args.webrtc_turn_username,
-            turn_credential=args.webrtc_turn_credential,
-            env_interval=args.webrtc_env_interval,
-            cry_state=cry_state,
-            auth_token=auth_token,
-        )
-        webrtc_runner = BackgroundService(
-            lambda: WebRtcBridge(webrtc_cfg, client.get_latest_webrtc_frame, client.get_latest_env_dict),
-            name='raspbot.webrtc',
-        )
-        webrtc_runner.start()
-        time.sleep(0.3)
-        if webrtc_runner.error is not None:
-            logger.error('bridge failed: %s', webrtc_runner.error)
-            logger.warning('tip: install aiortc or disable with no --enable-webrtc-bridge')
-        else:
-            logger.info('bridge started via %s', args.webrtc_signaling_url)
-
-    try:
-        asyncio.run(client.run())
-    finally:
-        if webrtc_runner is not None:
-            webrtc_runner.stop()
-            logger.info('bridge stopped')
-        if app_gateway_runner is not None:
-            app_gateway_runner.stop()
-            logger.info('embedded server stopped')
-        if asr_runner is not None:
-            asr_runner.stop()
-            logger.info('embedded server stopped')
+    args.enable_webrtc_bridge = not bool(args.disable_webrtc_bridge)
+    SystemCoordinator.from_args(args).run()
 
 
 if __name__ == '__main__':

@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import queue
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -25,6 +27,7 @@ from .protocol import _safe_ws_path
 logger = setup_logger("raspbot.asr")
 
 SAMPLE_RATE = 16000
+_AUDIO_EOF = object()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -138,6 +141,13 @@ class AsrServer:
         self._baidu_local_config: Optional[dict] = None
         self._cry_detector = None
         self._cry_detector_failed = False
+        self._cry_queue: Optional[queue.Queue] = None
+        self._cry_thread: Optional[threading.Thread] = None
+        self._cry_stop = threading.Event()
+        self._cry_ready = threading.Event()
+        self._cry_drop_count = 0
+        self._last_cry_drop_log = 0.0
+        self._last_cry_update_log = 0.0
 
     def _emit_text(self, text: str):
         text = (text or "").strip()
@@ -178,6 +188,11 @@ class AsrServer:
             updates = detector.feed_pcm16(audio)
             for crying, ratio in updates:
                 self.cfg.on_cry_state(bool(crying), float(ratio))
+                now = time.monotonic()
+                score = int(max(0, min(100, round(float(ratio) * 100.0))))
+                if crying or score >= 20 or now - self._last_cry_update_log >= 10.0:
+                    self._last_cry_update_log = now
+                    logger.info("cry detector update crying=%s score=%s", bool(crying), score)
         except Exception as exc:
             logger.warning("cry detector update failed: %s", exc)
 
@@ -219,12 +234,148 @@ class AsrServer:
         del buf[:self._frame_bytes]
         return frame + bytes(buf)
 
+    async def _read_first_frame_from_queue(self, audio_queue: asyncio.Queue) -> bytes | None:
+        buf = bytearray()
+        while len(buf) < self._frame_bytes:
+            message = await audio_queue.get()
+            if message is _AUDIO_EOF:
+                return None
+            if not isinstance(message, (bytes, bytearray)):
+                continue
+            buf.extend(message)
+        frame = bytes(buf[:self._frame_bytes])
+        del buf[:self._frame_bytes]
+        return frame + bytes(buf)
+
+    def _start_cry_worker(self) -> None:
+        if self.cfg.on_cry_state is None:
+            return
+        if self._cry_thread is not None and self._cry_thread.is_alive():
+            return
+        max_items = int(os.getenv("ASR_CRY_QUEUE_MAX", "48"))
+        self._cry_queue = queue.Queue(maxsize=max(4, max_items))
+        self._cry_stop.clear()
+        self._cry_ready.clear()
+        self._cry_thread = threading.Thread(target=self._cry_worker_loop, name="raspbot-cry", daemon=True)
+        self._cry_thread.start()
+        logger.info("cry detector worker started queue_max=%s", max(4, max_items))
+
+    def _wait_cry_ready(self, timeout: float = 0.0) -> bool:
+        if self.cfg.on_cry_state is None:
+            return True
+        if self._cry_thread is None or not self._cry_thread.is_alive():
+            self._start_cry_worker()
+        return self._cry_ready.wait(timeout=max(0.0, float(timeout)))
+
+    def _stop_cry_worker(self) -> None:
+        self._cry_stop.set()
+        q = self._cry_queue
+        if q is not None:
+            try:
+                q.put_nowait(None)
+            except queue.Full:
+                pass
+        thread = self._cry_thread
+        if thread and thread.is_alive():
+            thread.join(timeout=2.0)
+
+    def _cry_worker_loop(self) -> None:
+        # Load YAMNet before the first real audio burst so startup model loading
+        # does not consume the beginning of a cry event.
+        detector = self._get_cry_detector()
+        if detector is not None and hasattr(detector, "_ensure_model"):
+            detector._ensure_model()
+        self._cry_ready.set()
+        while not self._cry_stop.is_set():
+            q = self._cry_queue
+            if q is None:
+                return
+            try:
+                item = q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if item is None:
+                return
+            self._feed_cry_detector(item)
+
+    def _enqueue_cry_audio(self, audio: bytes) -> None:
+        if self.cfg.on_cry_state is None or not audio:
+            return
+        self._start_cry_worker()
+        if not self._cry_ready.is_set():
+            return
+        q = self._cry_queue
+        if q is None:
+            return
+        try:
+            q.put_nowait(bytes(audio))
+            return
+        except queue.Full:
+            self._cry_drop_count += 1
+            try:
+                _ = q.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                q.put_nowait(bytes(audio))
+            except queue.Full:
+                pass
+            now = time.monotonic()
+            if now - self._last_cry_drop_log >= 5.0:
+                self._last_cry_drop_log = now
+                logger.warning(
+                    "cry queue full; dropped stale chunks count=%s size=%s",
+                    self._cry_drop_count,
+                    q.qsize(),
+                )
+
+    async def _queue_client_audio(self, client_ws, audio_queue: asyncio.Queue) -> None:
+        drop_count = 0
+        last_drop_log = 0.0
+        try:
+            async for message in client_ws:
+                if not isinstance(message, (bytes, bytearray)):
+                    continue
+                payload = bytes(message)
+                self._enqueue_cry_audio(payload)
+                try:
+                    audio_queue.put_nowait(payload)
+                except asyncio.QueueFull:
+                    drop_count += 1
+                    try:
+                        _ = audio_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                    try:
+                        audio_queue.put_nowait(payload)
+                    except asyncio.QueueFull:
+                        pass
+                    now = time.monotonic()
+                    if now - last_drop_log >= 5.0:
+                        last_drop_log = now
+                        logger.warning(
+                            "audio queue full; dropped stale mic chunks count=%s size=%s",
+                            drop_count,
+                            audio_queue.qsize(),
+                        )
+        finally:
+            try:
+                audio_queue.put_nowait(_AUDIO_EOF)
+            except asyncio.QueueFull:
+                try:
+                    _ = audio_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    audio_queue.put_nowait(_AUDIO_EOF)
+                except asyncio.QueueFull:
+                    pass
+
     # ── one Baidu session per client ─────────────────────────────────────────
 
-    async def _run_baidu_session(self, client_ws):
+    async def _run_baidu_session_from_queue(self, audio_queue: asyncio.Queue):
         """Stream audio from client_ws to Baidu, emit FIN_TEXT when done."""
-        message_iter = client_ws.__aiter__()
-        first_audio = await self._read_first_frame(message_iter)
+        first_audio = await self._read_first_frame_from_queue(audio_queue)
         if first_audio is None:
             return False
 
@@ -235,31 +386,26 @@ class AsrServer:
 
         async with websockets.connect(baidu_url, open_timeout=8, close_timeout=1) as baidu_ws:
             await baidu_ws.send(await self._build_start_frame())
+            last_audio_ts = time.monotonic()
 
             # Sender: read from client, forward to Baidu
-            async def sender():
-                nonlocal buf
+            async def send_audio(audio: bytes):
+                nonlocal buf, last_audio_ts
+                if not audio:
+                    return
                 last_audio_ts = time.monotonic()
+                buf.extend(audio)
+                while len(buf) >= self._frame_bytes:
+                    frame = bytes(buf[:self._frame_bytes])
+                    del buf[:self._frame_bytes]
+                    await baidu_ws.send(frame)
 
-                async def send_audio(audio: bytes):
-                    nonlocal buf, last_audio_ts
-                    if not audio:
-                        return
-                    self._feed_cry_detector(audio)
-                    last_audio_ts = time.monotonic()
-                    buf.extend(audio)
-                    while len(buf) >= self._frame_bytes:
-                        frame = bytes(buf[:self._frame_bytes])
-                        del buf[:self._frame_bytes]
-                        await baidu_ws.send(frame)
+            await send_audio(first_audio)
 
-                await send_audio(first_audio)
+            async def sender():
                 while True:
                     try:
-                        message = await asyncio.wait_for(
-                            message_iter.__anext__(),
-                            timeout=0.5,
-                        )
+                        message = await asyncio.wait_for(audio_queue.get(), timeout=0.5)
                     except asyncio.TimeoutError:
                         if time.monotonic() - last_audio_ts >= idle_timeout:
                             logger.info(
@@ -268,7 +414,7 @@ class AsrServer:
                             )
                             break
                         continue
-                    except StopAsyncIteration:
+                    if message is _AUDIO_EOF:
                         break
                     if isinstance(message, (bytes, bytearray)):
                         await send_audio(bytes(message))
@@ -294,6 +440,8 @@ class AsrServer:
                     if err_no != 0:
                         if err_no == -3005:
                             logger.info("baidu no effective speech; restarting session")
+                        elif err_no == -3101:
+                            pass  # wait audio over time — normal when no one speaks
                         else:
                             logger.warning("baidu err_no=%s err_msg=%s", err_no, payload.get("err_msg", ""))
                         await baidu_ws.close()
@@ -327,6 +475,16 @@ class AsrServer:
                     logger.warning("baidu session error: %s", result)
         return True
 
+    async def _run_baidu_session(self, client_ws):
+        queue_max = int(os.getenv("ASR_AUDIO_QUEUE_MAX", "96"))
+        audio_queue: asyncio.Queue = asyncio.Queue(maxsize=max(8, queue_max))
+        recv_task = asyncio.create_task(self._queue_client_audio(client_ws, audio_queue))
+        try:
+            return await self._run_baidu_session_from_queue(audio_queue)
+        finally:
+            recv_task.cancel()
+            await asyncio.gather(recv_task, return_exceptions=True)
+
     # ── client handler ───────────────────────────────────────────────────────
 
     async def handle_client(self, ws):
@@ -337,13 +495,20 @@ class AsrServer:
 
         peer = getattr(ws, "remote_address", None)
         logger.info("client connected: %s", peer)
+        queue_max = int(os.getenv("ASR_AUDIO_QUEUE_MAX", "96"))
+        audio_queue: asyncio.Queue = asyncio.Queue(maxsize=max(8, queue_max))
+        recv_task = asyncio.create_task(self._queue_client_audio(ws, audio_queue))
         try:
             while True:
-                if not await self._run_baidu_session(ws):
+                if not await self._run_baidu_session_from_queue(audio_queue):
+                    break
+                if recv_task.done() and audio_queue.empty():
                     break
         except Exception as exc:
             logger.warning("client error: %s", exc)
         finally:
+            recv_task.cancel()
+            await asyncio.gather(recv_task, return_exceptions=True)
             logger.info("client disconnected: %s", peer)
 
     # ── server ───────────────────────────────────────────────────────────────
@@ -354,14 +519,24 @@ class AsrServer:
             self.cfg.host, self.cfg.port, self.cfg.path,
             self.cfg.baidu_dev_pid, self.cfg.baidu_frame_ms, self._frame_bytes,
         )
-        async with websockets.serve(
-            self.handle_client,
-            self.cfg.host,
-            self.cfg.port,
-            max_size=2 * 1024 * 1024,
-        ):
-            if stop_event is None:
-                await asyncio.Future()
+        self._start_cry_worker()
+        warmup_wait = float(os.getenv("ASR_CRY_WARMUP_WAIT_SEC", "30.0"))
+        if self.cfg.on_cry_state is not None and warmup_wait > 0:
+            if self._wait_cry_ready(warmup_wait):
+                logger.info("cry detector ready")
             else:
-                while not stop_event.is_set():
-                    await asyncio.sleep(0.2)
+                logger.warning("cry detector warmup not ready after %.1fs; continuing", warmup_wait)
+        try:
+            async with websockets.serve(
+                self.handle_client,
+                self.cfg.host,
+                self.cfg.port,
+                max_size=2 * 1024 * 1024,
+            ):
+                if stop_event is None:
+                    await asyncio.Future()
+                else:
+                    while not stop_event.is_set():
+                        await asyncio.sleep(0.2)
+        finally:
+            self._stop_cry_worker()

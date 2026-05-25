@@ -16,18 +16,21 @@ from .env_logger import flush_csv, log_env
 from .packets import CommandPacket, EnvPacket
 from .voice_cry_bridge import parse_voice_intent
 from .dialogue_engine import DialogueEngine
+from .cloud_upload import CloudUploader
 logger = setup_logger('raspbot.client')
 
 class PCClientWS:
 
     def __init__(self, uri: str, model_path: str, yolo_device: str = 'cuda',
-                 yolo_disable_cudnn: bool = True, tuning_path: str = None):
+                 yolo_disable_cudnn: bool = True, tuning_path: str = None,
+                 tracking_enabled_provider=None):
         self.uri        = uri
         self.model_path = model_path
         self.yolo_device = yolo_device
         self.yolo_disable_cudnn = yolo_disable_cudnn
         self.model      = None
         self.motion = MotionController(tuning_path=tuning_path)
+        self.tracking_enabled_provider = tracking_enabled_provider
         self._last_pid_time = 0.0
         self.frame_count  = 0
         self.detections   = {}
@@ -70,8 +73,14 @@ class PCClientWS:
         self._asr_echo_suppress_until = 0.0
         self._asr_echo_suppress_sec = float(os.getenv('RASPBOT_ASR_ECHO_SUPPRESS_SEC', '6.0'))
         self.dialogue = DialogueEngine()
+        self.cloud_uploader = CloudUploader()
         self._last_env_debug_ts = 0.0
         self._last_env_parse_error_ts = 0.0
+        self._last_alarm_log_signature = ''
+        self._last_alarm_log_ts = 0.0
+        self._alarm_log_interval_sec = float(os.getenv('RASPBOT_ALARM_LOG_INTERVAL_SEC', '300.0'))
+        self._last_tracking_gate_log_ts = 0.0
+        self._last_tracking_enabled_state = None
 
 
     def _reset_tracking(self):
@@ -231,6 +240,11 @@ class PCClientWS:
 
 
     def make_command(self, detections: dict) -> CommandPacket:
+        if not self._tracking_enabled():
+            self._reset_tracking()
+            self._last_track_locked = False
+            self._last_track_conf = 0.0
+            return self._tracking_disabled_stop_command()
         boxes  = detections.get('boxes', [])
         confs  = detections.get('confs', [])
         classes = detections.get('classes', [])
@@ -251,6 +265,42 @@ class PCClientWS:
             left_speed=out.left_speed,
             right_speed=out.right_speed,
             detecting=detecting,
+            tracking_mode=True,
+        )
+
+
+    def _tracking_enabled(self) -> bool:
+        provider = self.tracking_enabled_provider
+        if provider is None:
+            self._log_tracking_enabled_change(True)
+            return True
+        try:
+            enabled = bool(provider())
+        except Exception:
+            enabled = False
+        self._log_tracking_enabled_change(enabled)
+        return enabled
+
+
+    def _log_tracking_enabled_change(self, enabled: bool) -> None:
+        if self._last_tracking_enabled_state is enabled:
+            return
+        if enabled and self._last_tracking_enabled_state is False:
+            logger.info('tracking enabled by App')
+        elif not enabled:
+            logger.info('tracking disabled by App; hold stop')
+        self._last_tracking_enabled_state = enabled
+
+
+    def _tracking_disabled_stop_command(self) -> CommandPacket:
+        return CommandPacket(
+            action='stop',
+            servo_angle=90.0,
+            servo_angle2=90.0,
+            speed=0,
+            left_speed=0,
+            right_speed=0,
+            detecting=False,
         )
 
 
@@ -378,7 +428,21 @@ class PCClientWS:
                                     imu.get('healthy'), imu.get('calibrated'),
                                 )
                     if self.env_state.alarm:
-                        logger.warning('alarm: %s  %s', self.env_state.alarm, self.env_state.raw)
+                        now = time.monotonic()
+                        alarm_signature = str(self.env_state.alarm)
+                        if (
+                            alarm_signature != self._last_alarm_log_signature
+                            or now - self._last_alarm_log_ts >= self._alarm_log_interval_sec
+                        ):
+                            self._last_alarm_log_signature = alarm_signature
+                            self._last_alarm_log_ts = now
+                            logger.warning('alarm: %s  %s', self.env_state.alarm, self.env_state.raw)
+                        if self._latest_video_jpeg is not None:
+                            asyncio.create_task(
+                                self.cloud_uploader.upload(self._latest_video_jpeg, self.env_state.alarm)
+                            )
+                    else:
+                        self._last_alarm_log_signature = ''
                 except Exception as exc:
                     now = time.monotonic()
                     if now - self._last_env_parse_error_ts >= 5.0:
@@ -448,7 +512,14 @@ class PCClientWS:
         last_payload = b''
         keepalive_deadline = 0.0
         while True:
-            cmd = self._build_voice_command() or self.last_command
+            voice_cmd = self._build_voice_command()
+            if voice_cmd is not None:
+                cmd = voice_cmd
+            else:
+                if not self._tracking_enabled():
+                    cmd = self._tracking_disabled_stop_command()
+                else:
+                    cmd = self.last_command
             wire = cmd.to_wire_dict()
             now = time.monotonic()
             payload = bytes([cfg.MSG_COMMAND]) + json.dumps(wire).encode('utf-8')

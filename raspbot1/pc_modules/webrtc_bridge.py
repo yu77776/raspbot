@@ -19,12 +19,15 @@ from .logger_setup import setup_logger
 from . import settings as cfg
 from .app_gateway import AppGateway, GatewayConfig
 from .protocol import (
+    TYPE_ENV_SUBSCRIBE,
+    TYPE_ENV_UPDATE,
     TYPE_WEBRTC_ICE,
     TYPE_WEBRTC_OFFER,
     TYPE_WEBRTC_ANSWER,
     payload_has_auth,
     strip_auth_fields,
 )
+from .cloud_upload import CloudUploader
 from .voice_cry_bridge import merge_env_cry
 
 logger = setup_logger('raspbot.webrtc')
@@ -59,6 +62,7 @@ class WebRtcBridgeConfig:
     video_fps: int = 20
     cry_state: object = None
     auth_token: str = ""
+    tracking_mode_store: object = None
 
 
 class LatestFrameVideoTrack(MediaStreamTrack):
@@ -126,14 +130,17 @@ class WebRtcBridge:
                 reconnect_delay=cfg_.reconnect_delay,
                 cry_state=cfg_.cry_state,
                 auth_token=cfg_.auth_token,
+                tracking_mode_store=cfg_.tracking_mode_store,
             )
         )
         self._pc: Optional[RTCPeerConnection] = None
         self._env_channel = None
         self._command_channel = None
         self._pending_ice = []
+        self._cloud_uploader = CloudUploader()
         self._stop_event: Optional[threading.Event] = None
         self._env_task: Optional[asyncio.Task] = None
+        self._signaling_env_tasks = set()
 
     async def run(self, stop_event: Optional[threading.Event] = None):
         self._stop_event = stop_event or threading.Event()
@@ -152,6 +159,7 @@ class WebRtcBridge:
                     await asyncio.sleep(self.cfg.reconnect_delay)
         finally:
             await self._close_peer()
+            await self._cancel_signaling_env_tasks()
             car_task.cancel()
             await asyncio.gather(car_task, return_exceptions=True)
 
@@ -176,6 +184,7 @@ class WebRtcBridge:
                 if isinstance(message, bytes):
                     continue
                 await self._handle_signal(ws, message)
+            await self._cancel_signaling_env_tasks()
 
     async def _create_peer(self, ws):
         await self._close_peer()
@@ -243,8 +252,84 @@ class WebRtcBridge:
                 logger.warning('drop unauthorized WebRTC ice')
                 return
             await self._add_ice(payload)
+        elif msg_type == TYPE_ENV_SUBSCRIBE:
+            if not payload_has_auth(payload, self.cfg.auth_token):
+                logger.warning('drop unauthorized env subscribe')
+                return
+            await self._start_signaling_env_loop(ws)
+        elif msg_type == "oss_list":
+            await self._handle_oss_list(ws, payload)
+        elif msg_type == "oss_download":
+            await self._handle_oss_download(ws, payload)
         elif msg_type in {"ping", "join", "joined"}:
             return
+
+    async def _start_signaling_env_loop(self, ws):
+        await self._cancel_signaling_env_tasks()
+        task = asyncio.create_task(self._signaling_env_loop(ws))
+        self._signaling_env_tasks.add(task)
+        task.add_done_callback(self._signaling_env_tasks.discard)
+        logger.info('started signaling env subscription')
+
+    async def _signaling_env_loop(self, ws):
+        last_sent = ""
+        while self._stop_event is None or not self._stop_event.is_set():
+            payload = self._env_provider() or {}
+            payload = self._merge_env_cry(payload)
+            text = json.dumps(
+                {
+                    "type": TYPE_ENV_UPDATE,
+                    "env": payload,
+                },
+                ensure_ascii=False,
+            )
+            if text != last_sent:
+                await ws.send(text)
+                last_sent = text
+            await asyncio.sleep(max(0.05, float(self.cfg.env_interval)))
+
+    async def _cancel_signaling_env_tasks(self):
+        tasks = list(self._signaling_env_tasks)
+        self._signaling_env_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _handle_oss_list(self, ws, payload: dict):
+        request_id = str(payload.get('request_id', '') or '')
+        prefix = str(payload.get('prefix', 'alarms/') or 'alarms/')
+        max_keys = int(payload.get('max_keys', 40))
+        images = await asyncio.to_thread(self._cloud_uploader.list_snapshots, prefix, max_keys)
+        reply = {
+            'type': 'oss_list_result',
+            'request_id': request_id,
+            'images': images,
+        }
+        await ws.send(json.dumps(reply, ensure_ascii=False))
+
+    async def _handle_oss_download(self, ws, payload: dict):
+        request_id = str(payload.get('request_id', '') or '')
+        key = str(payload.get('key', '') or '')
+        if not key:
+            await ws.send(json.dumps({
+                'type': 'oss_download_result',
+                'request_id': request_id,
+                'key': key,
+                'data': '',
+                'error': 'missing key',
+            }, ensure_ascii=False))
+            return
+        jpeg_bytes = await asyncio.to_thread(self._cloud_uploader.download_snapshot, key)
+        import base64
+        data_b64 = base64.b64encode(jpeg_bytes).decode('ascii') if jpeg_bytes else ''
+        reply = {
+            'type': 'oss_download_result',
+            'request_id': request_id,
+            'key': key,
+            'data': data_b64,
+        }
+        await ws.send(json.dumps(reply, ensure_ascii=False))
 
     async def _accept_offer(self, ws, payload: dict):
         sdp = str(payload.get("sdp") or payload.get("offer") or "").replace("\\n", "\n")

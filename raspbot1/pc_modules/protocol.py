@@ -19,6 +19,8 @@ TYPE_APP_VOICE = "app_voice"
 TYPE_WEBRTC_OFFER = "webrtc_offer"
 TYPE_WEBRTC_ANSWER = "webrtc_answer"
 TYPE_WEBRTC_ICE = "webrtc_ice"
+TYPE_ENV_SUBSCRIBE = "env_subscribe"
+TYPE_ENV_UPDATE = "env_update"
 
 # Shared playlist navigation sentinels — keep in sync with car-side audio.py.
 PLAY_SONG_NEXT = "__next__"

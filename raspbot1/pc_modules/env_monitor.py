@@ -1,9 +1,5 @@
 """Lightweight websocket monitor for car environment and IMU packets."""
 
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
-
 import argparse
 import asyncio
 import json
@@ -11,9 +7,9 @@ import time
 
 import websockets
 
-from pc_modules import settings as cfg
-from pc_modules.logger_setup import setup_logger
-from pc_modules.protocol import append_auth_token_to_uri, resolve_auth_token
+from . import settings as cfg
+from .logger_setup import setup_logger
+from .protocol import append_auth_token_to_uri, resolve_auth_token
 from .discovery import DEFAULT_DISCOVERY_PORT, discover_car
 
 logger = setup_logger('raspbot.monitor')

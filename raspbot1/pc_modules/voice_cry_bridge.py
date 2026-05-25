@@ -40,9 +40,16 @@ def parse_voice_intent(text: str, hold_sec: float = 2.2) -> Optional[Dict[str, o
     play_audio_keys = [
         "播放儿歌",
         "放儿歌",
+        "放首儿歌",
+        "放一首儿歌",
         "播放音乐",
         "放音乐",
+        "放首歌",
+        "放一首歌",
+        "来首歌",
+        "来一首歌",
         "唱歌",
+        "唱首歌",
     ]
     next_audio_keys = [
         "下一首",
@@ -56,17 +63,37 @@ def parse_voice_intent(text: str, hold_sec: float = 2.2) -> Optional[Dict[str, o
         "上首",
         "前一首",
     ]
+    volume_up_keys = [
+        "大声一点",
+        "声音大点",
+        "调高音量",
+        "音量大点",
+        "声音调大",
+    ]
+    volume_down_keys = [
+        "小声一点",
+        "声音小点",
+        "调低音量",
+        "音量小点",
+        "声音调小",
+    ]
     if any(k in cleaned for k in stop_audio_keys):
         return _intent(stop_audio=True, audio_volume=None)
 
+    if any(k in cleaned for k in volume_up_keys):
+        return _intent(audio_volume=min(100, cfg.VOICE_DEFAULT_AUDIO_VOLUME + 20))
+
+    if any(k in cleaned for k in volume_down_keys):
+        return _intent(audio_volume=max(0, cfg.VOICE_DEFAULT_AUDIO_VOLUME - 20))
+
     if any(k in cleaned for k in next_audio_keys):
-        return _intent(play_song=PLAY_SONG_NEXT, audio_volume=cfg.VOICE_DEFAULT_AUDIO_VOLUME)
+        return _intent(play_song=PLAY_SONG_NEXT)
 
     if any(k in cleaned for k in prev_audio_keys):
-        return _intent(play_song=PLAY_SONG_PREV, audio_volume=cfg.VOICE_DEFAULT_AUDIO_VOLUME)
+        return _intent(play_song=PLAY_SONG_PREV)
 
     if any(k in cleaned for k in play_audio_keys):
-        return _intent(play_song=cfg.VOICE_DEFAULT_SONG_FILE, audio_volume=cfg.VOICE_DEFAULT_AUDIO_VOLUME)
+        return _intent(play_song=cfg.VOICE_DEFAULT_SONG_FILE)
 
     action = None
     stop_keys = ["停止", "停下", "停车", "别动", "不要动", "等等"]
@@ -131,7 +158,7 @@ class CryStateStore:
 
     def update_from_ratio(self, is_crying: bool, ratio: float) -> None:
         score = int(max(0, min(100, round(float(ratio) * 100.0))))
-        alarm = f"cry_detected score={score}" if is_crying else ""
+        alarm = "cry" if is_crying else ""
         now = time.monotonic()
         with self._lock:
             self._crying = bool(is_crying)

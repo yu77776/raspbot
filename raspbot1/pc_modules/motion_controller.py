@@ -90,11 +90,11 @@ class MotionConfig:
     servo_y_hold: float = cfg.SERVO_Y_HOLD_ANGLE
 
     enable_motor_control: bool = cfg.ENABLE_MOTOR_CONTROL
-    body_kp: float = 1.8
-    body_kd_imu: float = 0.3
-    body_dead_zone: float = 5.0
-    body_speed_min: int = 40
-    body_speed_max: int = 100
+    body_kp: float = 1
+    body_kd_imu: float = 0.0
+    body_dead_zone: float = 1.0
+    body_speed_min: int = 50
+    body_speed_max: int = 70
     body_out_max: float = 100.0
 
     enable_distance_follow: bool = True
@@ -102,12 +102,12 @@ class MotionConfig:
     follow_dist_far: float = 45.0
     follow_hysteresis: float = 2.0
     follow_speed_kp: float = 2.2
-    follow_speed_min: int = 45
+    follow_speed_min: int = 60
     follow_speed_max: int = 80
-    follow_back_speed_max: int = 60
+    follow_back_speed_max: int = 70
     follow_servo_center_deg: float = 12.0
-    follow_min_action_sec: float = 0.20
-    follow_max_action_sec: float = 0.65
+    follow_min_action_sec: float = 0.05
+    follow_max_action_sec: float = 0.05
     follow_cooldown_sec: float = 0.30
 
     obstacle_cm: float = 30.0
@@ -241,7 +241,8 @@ class MotionController:
         self._apply_pid_config()
         if any(name.startswith("follow_") or name == "enable_distance_follow" for name in changed):
             self._reset_follow()
-        logger.info('reloaded %s: %s', os.path.basename(self.tuner.path), ', '.join(changed))
+        if len(changed) <= 3:
+            logger.info('tuning changed: %s', ', '.join(changed))
 
     def _apply_pid_config(self):
         self.pid_x.kp = self.cfg.servo_kp_x
@@ -365,7 +366,8 @@ class MotionController:
     def _do_scan(self, dt):
         c = self.cfg
         if time.monotonic() - self._scan_start_t > c.scan_timeout:
-            return MotionOutput(servo_x=self.servo_x, servo_y=self.servo_y, state=MotionState.SCAN)
+            self.state = MotionState.IDLE
+            return MotionOutput(servo_x=self.servo_x, servo_y=self.servo_y, state=MotionState.IDLE)
 
         step = c.scan_speed_deg_s * dt * self._scan_dir
         new_x = self.servo_x + step

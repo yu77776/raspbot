@@ -40,6 +40,33 @@ class TestCarePolicy(unittest.TestCase):
         self.assertIn("light_low", tokens)
         self.assertIn("smoke", tokens)
 
+    def test_default_low_temperature_threshold_is_15c(self):
+        policy = CarePolicy(CarePolicyConfig(tts_cooldown_sec=0.0))
+
+        normal_tokens = policy.build_alarm_tokens(
+            env={"temp_c": 15.1, "light_lux": 200},
+            dist_cm=80.0,
+            track=[1, 1, 1, 1],
+            crying=False,
+            cry_score=0,
+            undervoltage=False,
+            remote_alarm="",
+            now=1.0,
+        )
+        low_tokens = policy.build_alarm_tokens(
+            env={"temp_c": 15.0, "light_lux": 200},
+            dist_cm=80.0,
+            track=[1, 1, 1, 1],
+            crying=False,
+            cry_score=0,
+            undervoltage=False,
+            remote_alarm="",
+            now=2.0,
+        )
+
+        self.assertNotIn("temp_low", normal_tokens)
+        self.assertIn("temp_low", low_tokens)
+
     def test_detects_light_change_after_baseline(self):
         policy = CarePolicy(
             CarePolicyConfig(light_change_lux=200, tts_cooldown_sec=0.0)
@@ -68,6 +95,29 @@ class TestCarePolicy(unittest.TestCase):
 
         self.assertIn("light_changed", tokens)
 
+    def test_skips_analog_alarms_when_pcf8591_unhealthy(self):
+        policy = CarePolicy(CarePolicyConfig())
+
+        tokens = policy.build_alarm_tokens(
+            env={
+                "pcf8591_ok": False,
+                "temp_c": 80.0,
+                "light_lux": 1000,
+                "smoke_alarm": True,
+            },
+            dist_cm=80.0,
+            track=[1, 1, 1, 1],
+            crying=False,
+            cry_score=0,
+            undervoltage=False,
+            remote_alarm="",
+            now=1.0,
+        )
+
+        self.assertNotIn("temp_high", tokens)
+        self.assertNotIn("light_high", tokens)
+        self.assertNotIn("smoke", tokens)
+
     def test_baby_tts_uses_gentle_copy_and_cooldown(self):
         policy = CarePolicy(
             CarePolicyConfig(
@@ -94,15 +144,15 @@ class TestCarePolicy(unittest.TestCase):
             )
         )
 
-        first = policy.baby_tts_for_tokens(["close_distance", "temp_low"], now=10.0)
+        first = policy.baby_tts_for_tokens(["close_distance"], now=10.0)
         second = policy.baby_tts_for_tokens(["temp_low"], now=15.0)
         third = policy.baby_tts_for_tokens(["temp_low"], now=30.0)
         fourth = policy.baby_tts_for_tokens(["temp_low"], now=100.0)
         fifth = policy.baby_tts_for_tokens(["temp_low"], now=220.0)
 
-        self.assertEqual(first, "我往后一点点，给宝宝留点空间")
-        self.assertEqual(second, "")
-        self.assertEqual(third, "宝宝不怕，盖好小被子会暖暖的")
+        self.assertEqual(first, "")
+        self.assertEqual(second, "宝宝不怕，盖好小被子会暖暖的")
+        self.assertEqual(third, "")
         self.assertEqual(fourth, "")
         self.assertEqual(fifth, "宝宝不怕，盖好小被子会暖暖的")
 

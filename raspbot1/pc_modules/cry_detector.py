@@ -23,6 +23,7 @@ class CryDetectorConfig:
     release_score: float = 0.40
     trigger_sec: float = 2.0
     release_sec: float = 3.0
+    high_decay: float = 0.7
     min_rms: float = 0.004
     model_url: str = "https://tfhub.dev/google/yamnet/1"
 
@@ -35,6 +36,7 @@ class CryDetectorConfig:
             release_score=_env_float("RASPBOT_CRY_RELEASE_SCORE", cls.release_score),
             trigger_sec=_env_float("RASPBOT_CRY_TRIGGER_SEC", cls.trigger_sec),
             release_sec=_env_float("RASPBOT_CRY_RELEASE_SEC", cls.release_sec),
+            high_decay=_env_float("RASPBOT_CRY_HIGH_DECAY", cls.high_decay),
             min_rms=_env_float("RASPBOT_CRY_MIN_RMS", cls.min_rms),
             model_url=os.getenv("RASPBOT_YAMNET_MODEL_URL", cls.model_url),
         )
@@ -60,7 +62,7 @@ class CryStateSmoother:
         if score >= self.cfg.trigger_score:
             self._high_sec += self.cfg.hop_sec
         else:
-            self._high_sec = 0.0
+            self._high_sec *= max(0.0, min(1.0, self.cfg.high_decay))
 
         if score <= self.cfg.release_score:
             self._low_sec += self.cfg.hop_sec
@@ -203,7 +205,9 @@ def _find_cry_indices(class_names: Sequence[str]) -> List[int]:
             preferred.append(index)
         elif "cry" in lower and ("baby" in lower or "infant" in lower or "child" in lower):
             preferred.append(index)
-        elif "cry" in lower or "sobbing" in lower:
+        elif "crying" in lower or "sobbing" in lower:
+            preferred.append(index)
+        elif "cry" in lower:
             fallback.append(index)
     return preferred or fallback
 

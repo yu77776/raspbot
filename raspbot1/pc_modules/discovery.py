@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from pc_modules.logger_setup import setup_logger
+from .logger_setup import setup_logger
 
 logger = setup_logger('raspbot.discovery')
 

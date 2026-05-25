@@ -28,6 +28,22 @@ class TestCryStateSmoother(unittest.TestCase):
         self.assertTrue(second.crying)
         self.assertEqual(second.score, 80)
 
+    def test_near_threshold_noise_decays_accumulated_trigger_time(self):
+        smoother = CryStateSmoother(
+            CryDetectorConfig(
+                trigger_score=0.60,
+                release_score=0.40,
+                trigger_sec=0.8,
+                release_sec=1.0,
+                hop_sec=0.5,
+                high_decay=0.7,
+            )
+        )
+
+        self.assertFalse(smoother.update(0.8).crying)
+        self.assertFalse(smoother.update(0.55).crying)
+        self.assertTrue(smoother.update(0.8).crying)
+
     def test_hysteresis_requires_sustained_low_score_before_clearing(self):
         smoother = CryStateSmoother(
             CryDetectorConfig(
