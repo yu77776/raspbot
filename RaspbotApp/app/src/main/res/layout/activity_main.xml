@@ -98,6 +98,20 @@
             android:text="等待视频"
             android:textColor="@color/text_secondary"
             android:textSize="10sp" />
+
+        <ImageButton
+            android:id="@+id/btnVideoReconnect"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_gravity="bottom|end"
+            android:layout_marginRight="10dp"
+            android:layout_marginBottom="10dp"
+            android:background="@drawable/bg_video_reconnect_button"
+            android:contentDescription="重新连接视频"
+            android:padding="9dp"
+            android:scaleType="center"
+            android:src="@drawable/ic_reconnect"
+            android:tint="@color/text_primary" />
     </FrameLayout>
 
     <FrameLayout
@@ -361,19 +375,78 @@
                 </LinearLayout>
 
                 <LinearLayout
+                    android:id="@+id/layoutAutoTrackingPanel"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:weightSum="2">
+                    android:layout_marginBottom="12dp"
+                    android:background="@drawable/bg_panel"
+                    android:orientation="vertical"
+                    android:padding="14dp">
+
+                    <TextView
+                        style="@style/SectionLabel"
+                        android:text="当前状态" />
+
+                    <TextView
+                        android:id="@+id/tvTrackingModeStatus"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:text="自动追踪运行中"
+                        android:textColor="@color/text_primary"
+                        android:textSize="17sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/layoutManualControls"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
 
                     <LinearLayout
-                        android:layout_width="0dp"
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginRight="4dp"
-                        android:layout_weight="1"
+                        android:layout_marginBottom="8dp"
                         android:background="@drawable/bg_panel"
-                        android:orientation="vertical"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
                         android:padding="14dp">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="前方距离"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/tvManualDistance"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:includeFontPadding="false"
+                            android:text="--cm"
+                            android:textColor="@color/text_primary"
+                            android:textSize="32sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:weightSum="2">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginRight="4dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_panel"
+                            android:orientation="vertical"
+                            android:padding="14dp">
 
                         <TextView
                             style="@style/SectionLabel"
@@ -421,51 +494,19 @@
                                 android:max="255"
                                 android:progress="80"
                                 android:progressTint="@color/amber"
-                                android:thumbTint="@color/amber" />
+                            android:thumbTint="@color/amber" />
 
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="8dp"
-                                android:orientation="horizontal">
-
-                                <TextView
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_weight="1"
-                                    android:text="扬声器"
-                                    android:textColor="@color/text_secondary"
-                                    android:textSize="11sp" />
-
-                                <TextView
-                                    android:id="@+id/tvSpeakerVolume"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:text="80%"
-                                    android:textColor="@color/text_primary"
-                                    android:textSize="13sp"
-                                    android:textStyle="bold" />
-                            </LinearLayout>
-
-                            <SeekBar
-                                android:id="@+id/seekSpeakerVolume"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:max="100"
-                                android:progress="80"
-                                android:progressTint="@color/amber"
-                                android:thumbTint="@color/amber" />
                         </LinearLayout>
-                    </LinearLayout>
+                        </LinearLayout>
 
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginLeft="4dp"
-                        android:layout_weight="1"
-                        android:background="@drawable/bg_panel"
-                        android:orientation="vertical"
-                        android:padding="14dp">
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginLeft="4dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_panel"
+                            android:orientation="vertical"
+                            android:padding="14dp">
 
                         <TextView
                             style="@style/SectionLabel"
@@ -549,6 +590,7 @@
                             android:textAllCaps="false"
                             android:textColor="@color/text_secondary"
                             android:textSize="11sp" />
+                        </LinearLayout>
                     </LinearLayout>
                 </LinearLayout>
 
@@ -567,80 +609,94 @@
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:orientation="horizontal">
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/bg_panel"
+                    android:orientation="vertical"
+                    android:padding="14dp">
+
+                    <TextView
+                        style="@style/SectionLabel"
+                        android:text="音乐播放" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="音量"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="11sp" />
+
+                        <TextView
+                            android:id="@+id/tvSpeakerVolume"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="80%"
+                            android:textColor="@color/text_primary"
+                            android:textSize="15sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <SeekBar
+                        android:id="@+id/seekSpeakerVolume"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:max="100"
+                        android:progress="80"
+                        android:progressTint="@color/amber"
+                        android:thumbTint="@color/amber" />
 
                     <Button
-                        android:id="@+id/btnSpinLeft"
-                        android:layout_width="0dp"
-                        android:layout_height="40dp"
-                        android:layout_marginRight="4dp"
-                        android:layout_weight="1"
-                        android:background="@drawable/bg_chip_default"
+                        android:id="@+id/btnAudioToggle"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:layout_marginTop="10dp"
+                        android:background="@drawable/bg_chip_selected_dark"
                         android:minWidth="0dp"
-                        android:text="左旋"
+                        android:text="播放儿歌"
                         android:textAllCaps="false"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="12sp" />
+                        android:textColor="@color/text_primary"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
 
-                    <Button
-                        android:id="@+id/btnSpinRight"
-                        android:layout_width="0dp"
-                        android:layout_height="40dp"
-                        android:layout_marginLeft="4dp"
-                        android:layout_weight="1"
-                        android:background="@drawable/bg_chip_default"
-                        android:minWidth="0dp"
-                        android:text="右旋"
-                        android:textAllCaps="false"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="12sp" />
-                </LinearLayout>
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:orientation="horizontal">
 
-                <Button
-                    android:id="@+id/btnAudioToggle"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginTop="10dp"
-                    android:background="@drawable/bg_chip_selected_dark"
-                    android:minWidth="0dp"
-                    android:text="播放儿歌"
-                    android:textAllCaps="false"
-                    android:textColor="@color/text_primary"
-                    android:textSize="13sp"
-                    android:textStyle="bold" />
+                        <Button
+                            android:id="@+id/btnAudioPrev"
+                            android:layout_width="0dp"
+                            android:layout_height="38dp"
+                            android:layout_marginRight="4dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_chip_default"
+                            android:minWidth="0dp"
+                            android:text="上一首"
+                            android:textAllCaps="false"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp" />
 
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:orientation="horizontal">
-
-                    <Button
-                        android:id="@+id/btnAudioPrev"
-                        android:layout_width="0dp"
-                        android:layout_height="40dp"
-                        android:layout_marginRight="4dp"
-                        android:layout_weight="1"
-                        android:background="@drawable/bg_chip_default"
-                        android:minWidth="0dp"
-                        android:text="上一首"
-                        android:textAllCaps="false"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="12sp" />
-
-                    <Button
-                        android:id="@+id/btnAudioNext"
-                        android:layout_width="0dp"
-                        android:layout_height="40dp"
-                        android:layout_marginLeft="4dp"
-                        android:layout_weight="1"
-                        android:background="@drawable/bg_chip_default"
-                        android:minWidth="0dp"
-                        android:text="下一首"
-                        android:textAllCaps="false"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="12sp" />
+                        <Button
+                            android:id="@+id/btnAudioNext"
+                            android:layout_width="0dp"
+                            android:layout_height="38dp"
+                            android:layout_marginLeft="4dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_chip_default"
+                            android:minWidth="0dp"
+                            android:text="下一首"
+                            android:textAllCaps="false"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp" />
+                    </LinearLayout>
                 </LinearLayout>
 
             </LinearLayout>
@@ -816,6 +872,15 @@
                             android:textColor="@color/text_secondary"
                             android:textSize="12sp" />
                     </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/tvBattery"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="电量 --"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
                 </LinearLayout>
 
                 <LinearLayout
@@ -838,14 +903,6 @@
                         android:layout_width="match_parent"
                         android:layout_height="96dp"
                         android:layout_marginTop="8dp" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:text="距离   温度   光照"
-                        android:textColor="@color/text_tertiary"
-                        android:textSize="9sp" />
                 </LinearLayout>
             </LinearLayout>
         </ScrollView>
@@ -891,7 +948,7 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="报警记录"
+                            android:text="事件记录"
                             android:textColor="@color/text_tertiary"
                             android:textSize="10sp" />
                     </LinearLayout>
@@ -907,20 +964,14 @@
                         android:text="全部清除"
                         android:textAllCaps="false"
                         android:textColor="@color/text_secondary"
-                        android:textSize="11sp" />
+                    android:textSize="11sp" />
                 </LinearLayout>
 
-                <TextView
-                    android:id="@+id/tvAlertHistory"
+                <LinearLayout
+                    android:id="@+id/layoutAlarmCardList"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:background="@drawable/bg_panel"
-                    android:lineSpacingExtra="6dp"
-                    android:minHeight="160dp"
-                    android:padding="14dp"
-                    android:text="-"
-                    android:textColor="@color/text_primary"
-                    android:textSize="12sp" />
+                    android:orientation="vertical" />
             </LinearLayout>
         </ScrollView>
 
@@ -937,55 +988,6 @@
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
                 android:paddingBottom="10dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="12dp"
-                    android:background="@drawable/bg_panel"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal"
-                    android:padding="14dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="连接方式"
-                        android:textColor="@color/text_primary"
-                        android:textSize="13sp"
-                        android:textStyle="bold" />
-
-                    <EditText
-                        android:id="@+id/etHost"
-                        android:layout_width="150dp"
-                        android:layout_height="36dp"
-                        android:background="@drawable/bg_input"
-                        android:inputType="text"
-                        android:paddingLeft="8dp"
-                        android:paddingRight="8dp"
-                        android:singleLine="true"
-                        android:hint="云端"
-                        android:text="云端"
-                        android:textColor="@color/text_primary"
-                        android:textColorHint="@color/text_tertiary"
-                        android:textSize="11sp" />
-
-                    <Button
-                        android:id="@+id/btnApplyHost"
-                        android:layout_width="wrap_content"
-                        android:layout_height="36dp"
-                        android:layout_marginLeft="6dp"
-                        android:background="@drawable/bg_chip_selected"
-                        android:minWidth="0dp"
-                        android:paddingLeft="10dp"
-                        android:paddingRight="10dp"
-                        android:text="应用"
-                        android:textAllCaps="false"
-                        android:textColor="@color/bg_deepest"
-                        android:textSize="10sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
 
                 <LinearLayout
                     android:layout_width="match_parent"

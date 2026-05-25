@@ -5,9 +5,7 @@ object RaspbotProtocol {
     const val CLOUD_HOST = "47.108.164.190"
     const val CLOUD_PORT = 8765
     const val DEFAULT_SIGNALING_URL = "ws://$CLOUD_HOST:$CLOUD_PORT/pc_room"
-    const val LOCAL_WS_PORT = 7000
 
-    const val APP_CMD_PREFIX: Byte = 0x02
     const val CAR_VIDEO_PREFIX = 0x01
     const val CAR_DATA_PREFIX = 0x03
 
@@ -15,4 +13,6 @@ object RaspbotProtocol {
     const val TYPE_WEBRTC_OFFER = "webrtc_offer"
     const val TYPE_WEBRTC_ANSWER = "webrtc_answer"
     const val TYPE_WEBRTC_ICE = "webrtc_ice"
+    const val TYPE_ENV_SUBSCRIBE = "env_subscribe"
+    const val TYPE_ENV_UPDATE = "env_update"
 }

@@ -3,6 +3,7 @@ package com.example.raspbotapp
 import android.content.Context
 import android.util.Log
 import android.view.View
+import com.example.raspbotapp.AlarmPolicy.addAuthToken
 import com.example.raspbotapp.AlarmPolicy.asIntOrNull
 import com.example.raspbotapp.AlarmPolicy.asStringOrNull
 import com.google.gson.Gson
@@ -192,7 +193,7 @@ class RaspbotWebRtcClient(
 
                     override fun onSetFailure(msg: String) {
                         Log.e(TAG, "setLocalDescription failed: $msg")
-                        callbacks.onStatus("本地SDP失败")
+                        callbacks.onStatus("SDP设置失败")
                     }
 
                     override fun onCreateSuccess(desc: SessionDescription) {}
@@ -211,10 +212,16 @@ class RaspbotWebRtcClient(
     }
 
     fun handleAnswer(obj: JsonObject) {
+        val pc = peerConnection ?: return
+        val signalingState = pc.signalingState()
+        if (signalingState != PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
+            Log.d(TAG, "ignore remote answer in signaling state=$signalingState")
+            return
+        }
         val sdpRaw = asStringOrNull(obj.get("sdp")) ?: asStringOrNull(obj.get("answer")) ?: return
         val sdp = sdpRaw.replace("\\n", "\n")
         val answer = SessionDescription(SessionDescription.Type.ANSWER, sdp)
-        peerConnection?.setRemoteDescription(object : SdpObserver {
+        pc.setRemoteDescription(object : SdpObserver {
             override fun onSetSuccess() {
                 Log.d(TAG, "WebRTC remote answer applied")
             }
@@ -315,10 +322,4 @@ class RaspbotWebRtcClient(
         videoView.visibility = View.GONE
     }
 
-    private fun addAuthToken(obj: JsonObject) {
-        val token = BuildConfig.RASPBOT_AUTH_TOKEN.trim()
-        if (token.isNotBlank()) {
-            obj.addProperty("auth_token", token)
-        }
-    }
 }

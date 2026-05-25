@@ -4,7 +4,9 @@ import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.os.Build
@@ -16,7 +18,7 @@ import android.util.Log
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
-import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -26,23 +28,21 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
 import com.example.raspbotapp.ui.DirectionPadView
 import com.example.raspbotapp.ui.SimpleTrendView
 import com.example.raspbotapp.AlarmPolicy.asBooleanOrNull
 import com.example.raspbotapp.AlarmPolicy.asFloatOrNull
 import com.example.raspbotapp.AlarmPolicy.asIntOrNull
 import com.example.raspbotapp.AlarmPolicy.asStringOrNull
+import com.example.raspbotapp.AlarmPolicy.addAuthToken
+import com.example.raspbotapp.AlarmPolicy.buildAlertDetails
+import com.example.raspbotapp.AlarmPolicy.buildBatteryDisplay
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import org.webrtc.SurfaceViewRenderer
-import java.nio.charset.StandardCharsets
-import java.text.SimpleDateFormat
 import java.util.ArrayDeque
-import java.util.Date
-import java.util.Locale
+import java.util.concurrent.Executors
 import kotlin.math.abs
 
 class MainActivity : AppCompatActivity() {
@@ -57,9 +57,7 @@ class MainActivity : AppCompatActivity() {
 
         private const val NOTIFICATION_CHANNEL_ID = "raspbot_alarm"
         private const val NOTIFICATION_CHANNEL_NAME = "Raspbot Alarms"
-        private const val NOTIFICATION_REQUEST_CODE = 1001
 
-        private const val MAX_ALERT_HISTORY = 40
         private const val TREND_WINDOW_MS = 5 * 60 * 1000L
         private const val TREND_RENDER_POINTS = 72
         private const val TAG = "RaspbotApp"
@@ -95,6 +93,9 @@ class MainActivity : AppCompatActivity() {
     // Mode
     private lateinit var btnManualMode: Button
     private lateinit var btnAutoMode: Button
+    private lateinit var layoutAutoTrackingPanel: LinearLayout
+    private lateinit var layoutManualControls: LinearLayout
+    private lateinit var tvTrackingModeStatus: TextView
 
     // Controls
     private lateinit var directionPad: DirectionPadView
@@ -105,18 +106,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvSpeedVal: TextView
     private lateinit var tvServo1: TextView
     private lateinit var tvServo2: TextView
+    private lateinit var tvManualDistance: TextView
     private lateinit var tvSpeakerVolume: TextView
     private lateinit var btnServoCenter: Button
     private lateinit var btnStop: Button
-    private lateinit var btnSpinLeft: Button
-    private lateinit var btnSpinRight: Button
     private lateinit var btnAudioToggle: Button
     private lateinit var btnAudioPrev: Button
     private lateinit var btnAudioNext: Button
 
     // Mine
-    private lateinit var etHost: EditText
-    private lateinit var btnApplyHost: Button
     private lateinit var swVoicePrompt: Switch
     private lateinit var swTrackingMode: Switch
 
@@ -125,6 +123,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var rtcVideo: SurfaceViewRenderer
     private lateinit var imgVideoFrame: ImageView
     private lateinit var tvVideoStatus: TextView
+    private lateinit var btnVideoReconnect: ImageButton
 
     // HOME status
     private lateinit var tvConnection: TextView
@@ -150,12 +149,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvCry: TextView
     private lateinit var tvCryScore: TextView
     private lateinit var tvFps: TextView
+    private lateinit var tvBattery: TextView
     private lateinit var trendView: SimpleTrendView
 
     // MESSAGE
     private lateinit var tvAlertSummary: TextView
-    private lateinit var tvAlertHistory: TextView
+    private lateinit var layoutAlarmCardList: LinearLayout
     private lateinit var btnClearAlertHistory: Button
+
+    private lateinit var ossImageLoader: OssImageLoader
+
+    private val executor = Executors.newFixedThreadPool(2)
 
     private var commandTicker: Runnable? = null
     private var isActivityAlive = true
@@ -171,23 +175,28 @@ class MainActivity : AppCompatActivity() {
     private var speakerVolumeDragging = false
     private var speakerVolumeNeedsInitialCarSync = true
     private var audioPlaying = false
-    private var trackingMode = false
+    private var trackingMode = true
     private var applyingHost = false
+    private var videoFrameReceived = false
 
     // Settings
     private var voicePromptEnabled = true
 
     // Alerts
-    private val alertHistory = ArrayDeque<String>()
+    private val alarmEvents = mutableListOf<AlarmEvent>()
+    private var expandedCardIndex = -1
     private var alertCount = 0
+    private var unreadAlertCount = 0
     private var lastAlarmSignature = ""
     private var lastAlarmAtMs = 0L
+    private var lastRecordedAlarmAtMs = 0L
     private var latestAlarmText = ""
 
     // Trends
     private val trendDistance = ArrayDeque<TrendSample>()
     private val trendTemp = ArrayDeque<TrendSample>()
     private val trendLight = ArrayDeque<TrendSample>()
+    private val trendSmoke = ArrayDeque<TrendSample>()
     private val trendLock = Any()
 
     // Cached env display values to skip redundant UI posts
@@ -198,6 +207,11 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var lastDispVolume: Int = -1
     @Volatile private var lastDispCrying: Boolean? = null
     @Volatile private var lastDispFps: Int = -1
+    @Volatile private var lastDispBattery: String = ""
+    @Volatile private var lastSafetySummary: String = ""
+    @Volatile private var lastSafetyCryScore: Int? = null
+    @Volatile private var lastCareSummary: String = ""
+    @Volatile private var lastCareHasAlarm: Boolean = false
 
     private lateinit var webRtcClient: RaspbotWebRtcClient
     private lateinit var connectionClient: RaspbotConnectionClient
@@ -208,13 +222,17 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         bindViews()
+        tvConnection.text = "未连接"
+        tvVideoStatus.text = "未连接"
         setupConnectionClients()
+        ossImageLoader = OssImageLoader(signalSender = { json -> connectionClient.sendSignaling(json) })
         applySystemBars()
         createNotificationChannel()
         requestNotificationPermissionIfNeeded()
         loadSavedSettings()
         setupControls()
         applySettingsToUi()
+        loadAlertHistory()
         showPage(Page.HOME)
 
         if (currentHost.isBlank()) {
@@ -224,9 +242,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        stopService(Intent(this, RaspbotAlarmService::class.java))
+        loadAlertHistory()
+    }
+
     override fun onStop() {
         super.onStop()
         sendAction("stop")
+        startBackgroundAlarmService()
     }
 
     override fun onDestroy() {
@@ -237,6 +262,7 @@ class MainActivity : AppCompatActivity() {
 
         webRtcClient.close()
         connectionClient.shutdown()
+        executor.shutdownNow()
 
         super.onDestroy()
     }
@@ -260,6 +286,9 @@ class MainActivity : AppCompatActivity() {
         // Mode
         btnManualMode = findViewById(R.id.btnManualMode)
         btnAutoMode = findViewById(R.id.btnAutoMode)
+        layoutAutoTrackingPanel = findViewById(R.id.layoutAutoTrackingPanel)
+        layoutManualControls = findViewById(R.id.layoutManualControls)
+        tvTrackingModeStatus = findViewById(R.id.tvTrackingModeStatus)
 
         // Controls
         directionPad = findViewById(R.id.directionPad)
@@ -270,18 +299,15 @@ class MainActivity : AppCompatActivity() {
         tvSpeedVal = findViewById(R.id.tvSpeedVal)
         tvServo1 = findViewById(R.id.tvServo1)
         tvServo2 = findViewById(R.id.tvServo2)
+        tvManualDistance = findViewById(R.id.tvManualDistance)
         tvSpeakerVolume = findViewById(R.id.tvSpeakerVolume)
         btnServoCenter = findViewById(R.id.btnServoCenter)
         btnStop = findViewById(R.id.btnStop)
-        btnSpinLeft = findViewById(R.id.btnSpinLeft)
-        btnSpinRight = findViewById(R.id.btnSpinRight)
         btnAudioToggle = findViewById(R.id.btnAudioToggle)
         btnAudioPrev = findViewById(R.id.btnAudioPrev)
         btnAudioNext = findViewById(R.id.btnAudioNext)
 
         // Mine
-        etHost = findViewById(R.id.etHost)
-        btnApplyHost = findViewById(R.id.btnApplyHost)
         swVoicePrompt = findViewById(R.id.swVoicePrompt)
         swTrackingMode = findViewById(R.id.swTrackingMode)
 
@@ -290,6 +316,7 @@ class MainActivity : AppCompatActivity() {
         rtcVideo = findViewById(R.id.rtcVideo)
         imgVideoFrame = findViewById(R.id.imgVideoFrame)
         tvVideoStatus = findViewById(R.id.tvVideoStatus)
+        btnVideoReconnect = findViewById(R.id.btnVideoReconnect)
 
         // HOME
         tvConnection = findViewById(R.id.tvConnection)
@@ -315,11 +342,12 @@ class MainActivity : AppCompatActivity() {
         tvCry = findViewById(R.id.tvCry)
         tvCryScore = findViewById(R.id.tvCryScore)
         tvFps = findViewById(R.id.tvFps)
+        tvBattery = findViewById(R.id.tvBattery)
         trendView = findViewById(R.id.trendView)
 
         // MESSAGE
         tvAlertSummary = findViewById(R.id.tvAlertSummary)
-        tvAlertHistory = findViewById(R.id.tvAlertHistory)
+        layoutAlarmCardList = findViewById(R.id.layoutAlarmCardList)
         btnClearAlertHistory = findViewById(R.id.btnClearAlertHistory)
     }
 
@@ -336,15 +364,14 @@ class MainActivity : AppCompatActivity() {
                     updateVideoStatus("连接中")
                 }
 
-                override fun onOpen(usingCloudSignaling: Boolean) {
+                override fun onOpen() {
                     applyingHost = false
-                    updateConnectionStatus("● 在线")
+                    videoFrameReceived = false
+                    updateConnectionStatus("信令已连接")
                     updateVideoStatus("等待视频流")
-                    if (usingCloudSignaling) {
-                        mainHandler.post {
-                            webRtcClient.setup()
-                            webRtcClient.start()
-                        }
+                    mainHandler.post {
+                        webRtcClient.setup()
+                        webRtcClient.start()
                     }
                     startCommandTicker()
                 }
@@ -382,6 +409,10 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onRemoteVideo() {
+                    if (!videoFrameReceived) {
+                        videoFrameReceived = true
+                        updateConnectionStatus("● 在线")
+                    }
                     mainHandler.post {
                         imgVideoFrame.visibility = View.GONE
                         rtcVideo.visibility = View.VISIBLE
@@ -426,17 +457,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadSavedSettings() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        currentHost = normalizeConnectionTarget(prefs.getString(KEY_HOST, RaspbotProtocol.CLOUD_CONNECTION_LABEL).orEmpty())
+        currentHost = RaspbotProtocol.CLOUD_CONNECTION_LABEL
         voicePromptEnabled = prefs.getBoolean(KEY_VOICE_PROMPT, true)
-        trackingMode = prefs.getBoolean(KEY_TRACKING_MODE, false)
+        trackingMode = prefs.getBoolean(KEY_TRACKING_MODE, true)
         speakerVolume = prefs.getInt(KEY_SPEAKER_VOLUME, 80)
-    }
-
-    private fun saveHost(host: String) {
-        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_HOST, host)
-            .apply()
+        prefs.edit().putString(KEY_HOST, currentHost).apply()
     }
 
     private fun saveVoicePrompt(value: Boolean) {
@@ -497,12 +522,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupControls() {
-        etHost.setText(displayConnectionTarget(currentHost))
-        tvHostDisplay.text = displayConnectionTarget(currentHost)
-        btnApplyHost.setOnClickListener { applyHostFromInput() }
-        etHost.setOnEditorActionListener { _, _, _ ->
-            applyHostFromInput()
-            true
+        tvHostDisplay.text = RaspbotProtocol.CLOUD_CONNECTION_LABEL
+        btnVideoReconnect.setOnClickListener {
+            reconnectVideoManually()
         }
 
         // Speed
@@ -583,8 +605,6 @@ class MainActivity : AppCompatActivity() {
 
         // Emergency stop
         btnStop.setOnClickListener { sendAction("stop") }
-        btnSpinLeft.setOnClickListener { sendAction("spin_left") }
-        btnSpinRight.setOnClickListener { sendAction("spin_right") }
         btnAudioToggle.setOnClickListener {
             if (audioPlaying) {
                 sendAudioCommand(playSong = "", stopAudio = true)
@@ -609,7 +629,10 @@ class MainActivity : AppCompatActivity() {
         btnTabMonitor.setOnClickListener { showPage(Page.MONITOR) }
         btnTabMessage.setOnClickListener { showPage(Page.MESSAGE) }
         btnTabMine.setOnClickListener { showPage(Page.MINE) }
-        val openAlerts = View.OnClickListener { showPage(Page.MESSAGE) }
+        val openAlerts = View.OnClickListener {
+            acknowledgeHomeAlerts()
+            showPage(Page.MESSAGE)
+        }
         cardAlertSummary.setOnClickListener(openAlerts)
         tvAlertLabel.setOnClickListener(openAlerts)
         tvAlertCount.setOnClickListener(openAlerts)
@@ -629,18 +652,178 @@ class MainActivity : AppCompatActivity() {
 
         // Clear alerts
         btnClearAlertHistory.setOnClickListener {
-            synchronized(alertHistory) {
-                alertHistory.clear()
-                alertCount = 0
-            }
+            alarmEvents.clear()
+            expandedCardIndex = -1
+            alertCount = 0
+            unreadAlertCount = 0
+            AlarmEventStore.clear(this)
             lastAlarmSignature = ""
             lastAlarmAtMs = 0L
+            lastRecordedAlarmAtMs = 0L
             latestAlarmText = ""
-            tvAlertHistory.text = "-"
+            layoutAlarmCardList.removeAllViews()
             tvAlertSummary.text = "0"
             tvAlarmCount.text = "0条"
+            tvAlertCount.text = "0"
+            tvAlertCount.setTextColor(Color.parseColor("#706858"))
             updateCareSummary(null, null, null, null, null)
             updateAlertBanner()
+        }
+    }
+
+    private fun loadAlertHistory() {
+        val events = AlarmEventStore.load(this)
+        alarmEvents.clear()
+        alarmEvents.addAll(events)
+        alertCount = events.size
+        unreadAlertCount = 0
+        layoutAlarmCardList.removeAllViews()
+        tvAlertSummary.text = alertCount.toString()
+        if (events.isEmpty()) {
+            latestAlarmText = ""
+            lastAlarmAtMs = 0L
+            lastRecordedAlarmAtMs = 0L
+        } else {
+            val latest = events.last()
+            latestAlarmText = latest.alarm
+            lastAlarmAtMs = latest.timeMs
+            lastRecordedAlarmAtMs = latest.timeMs
+        }
+        for (event in events) {
+            addAlarmCard(event)
+        }
+        updateAlertBanner()
+    }
+
+    private fun addAlarmCard(event: AlarmEvent) {
+        val card = layoutInflater.inflate(R.layout.alarm_card_item, layoutAlarmCardList, false)
+        val headerRow = card.findViewById<LinearLayout>(R.id.cardHeader)
+        val dotView = card.findViewById<View>(R.id.dotAlarmType)
+        val titleView = card.findViewById<TextView>(R.id.tvCardAlarmTitle)
+        val timeView = card.findViewById<TextView>(R.id.tvCardAlarmTime)
+        val detailArea = card.findViewById<LinearLayout>(R.id.cardDetail)
+        val imgSnapshot = card.findViewById<ImageView>(R.id.imgCardSnapshot)
+        val snapshotHint = card.findViewById<TextView>(R.id.tvCardSnapshotHint)
+        val detailsView = card.findViewById<TextView>(R.id.tvCardDetails)
+
+        val alarmColor = alarmTypeColor(event.alarm)
+        dotView.background = android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.OVAL
+            setColor(alarmColor)
+        }
+        titleView.text = event.alarm
+        timeView.text = event.timeText
+        detailsView.text = event.details.ifBlank { "已记录报警" }
+
+        card.tag = CardViewHolder(event, dotView, titleView, timeView, detailArea, imgSnapshot, snapshotHint, detailsView)
+        headerRow.setOnClickListener { toggleCard(card) }
+        layoutAlarmCardList.addView(card, 0)
+    }
+
+    private data class CardViewHolder(
+        val event: AlarmEvent,
+        val dotView: View,
+        val titleView: TextView,
+        val timeView: TextView,
+        val detailArea: LinearLayout,
+        val imgSnapshot: ImageView,
+        val snapshotHint: TextView,
+        val detailsView: TextView
+    )
+
+    private fun toggleCard(card: View) {
+        val index = layoutAlarmCardList.indexOfChild(card)
+        if (index < 0 || index >= layoutAlarmCardList.childCount) return
+        val holder = card.tag as? CardViewHolder ?: return
+
+        if (expandedCardIndex == index) {
+            // Collapse
+            holder.detailArea.visibility = View.GONE
+            expandedCardIndex = -1
+            return
+        }
+        // Collapse previously expanded card
+        if (expandedCardIndex >= 0 && expandedCardIndex < layoutAlarmCardList.childCount) {
+            val prevCard = layoutAlarmCardList.getChildAt(expandedCardIndex)
+            val prevHolder = prevCard?.tag as? CardViewHolder
+            prevHolder?.detailArea?.visibility = View.GONE
+        }
+        // Expand this card
+        expandedCardIndex = index
+        holder.detailArea.visibility = View.VISIBLE
+        // Try to load cloud snapshot
+        val snapshotKey = holder.event.snapshotKey
+        if (snapshotKey != null && holder.imgSnapshot.drawable == null) {
+            loadCardSnapshot(holder, snapshotKey)
+        } else if (snapshotKey != null) {
+            holder.imgSnapshot.visibility = View.VISIBLE
+            holder.snapshotHint.visibility = View.GONE
+        } else {
+            // No preset key — search OSS by alarm type + time
+            holder.snapshotHint.visibility = View.VISIBLE
+            holder.snapshotHint.text = "正在查找云端快照..."
+            try {
+                executor.execute {
+                    try {
+                        val matched = ossImageLoader.findSnapshotForAlarm(
+                            holder.event.alarm, holder.event.timeMs
+                        )
+                        mainHandler.post {
+                            if (matched != null) {
+                                loadCardSnapshot(holder, matched.key)
+                            } else {
+                                holder.snapshotHint.text = "暂无云端快照"
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "findSnapshotForAlarm failed", e)
+                        mainHandler.post { holder.snapshotHint.text = "快照查找失败" }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "executor submit failed", e)
+                holder.snapshotHint.text = "暂无云端快照"
+            }
+        }
+    }
+
+    private fun loadCardSnapshot(holder: CardViewHolder, key: String) {
+        holder.snapshotHint.visibility = View.VISIBLE
+        holder.snapshotHint.text = "云端快照加载中..."
+        try {
+            executor.execute {
+                try {
+                    val data = ossImageLoader.downloadImage(key)
+                    mainHandler.post {
+                        if (data != null) {
+                            val bmp = BitmapFactory.decodeByteArray(data, 0, data.size)
+                            holder.imgSnapshot.setImageBitmap(bmp)
+                            holder.imgSnapshot.visibility = View.VISIBLE
+                            holder.snapshotHint.visibility = View.GONE
+                        } else {
+                            holder.snapshotHint.text = "暂无云端快照"
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "downloadImage failed", e)
+                    mainHandler.post { holder.snapshotHint.text = "快照加载失败" }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "executor submit failed", e)
+            holder.snapshotHint.text = "暂无云端快照"
+        }
+    }
+
+    private fun alarmTypeColor(alarm: String): Int {
+        return when {
+            alarm.contains("哭声") || alarm.contains("cry") -> Color.parseColor("#D45A5A")
+            alarm.contains("烟雾") || alarm.contains("smoke") -> Color.parseColor("#D4844A")
+            alarm.contains("悬崖") || alarm.contains("cliff") -> Color.parseColor("#D45A5A")
+            alarm.contains("高温") || alarm.contains("temp_high") -> Color.parseColor("#D4844A")
+            alarm.contains("低温") || alarm.contains("temp_low") -> Color.parseColor("#5A8AD4")
+            alarm.contains("距离") || alarm.contains("close") -> Color.parseColor("#C9A84A")
+            else -> Color.parseColor("#A09888")
         }
     }
 
@@ -668,6 +851,9 @@ class MainActivity : AppCompatActivity() {
             btnAutoMode.setBackgroundResource(R.drawable.bg_chip_default)
             btnAutoMode.setTextColor(Color.parseColor("#A09888"))
         }
+        layoutAutoTrackingPanel.visibility = if (trackingMode) View.VISIBLE else View.GONE
+        layoutManualControls.visibility = if (trackingMode) View.GONE else View.VISIBLE
+        updateControlStatusText()
     }
 
     private fun showPage(page: Page) {
@@ -701,11 +887,11 @@ class MainActivity : AppCompatActivity() {
     private fun sendAction(action: String) {
         if (trackingMode && action != "stop") {
             saveTrackingMode(false)
+            Toast.makeText(this, "已切换到手动控制", Toast.LENGTH_SHORT).show()
         }
         currentAction = action
         sendCommand(force = true)
     }
-
 
     private fun sendAudioCommand(playSong: String, stopAudio: Boolean) {
         val obj = JsonObject().apply {
@@ -721,10 +907,12 @@ class MainActivity : AppCompatActivity() {
             if (playSong.isNotBlank()) addProperty("play_song", playSong)
             addProperty("stop_audio", stopAudio)
         }
-        sendJsonCommand(gson.toJson(obj))
+        val sent = sendJsonCommand(gson.toJson(obj))
         audioPlaying = !stopAudio
         updateAudioButton()
-        val text = when {
+        val text = if (!sent) {
+            "控制通道未连接"
+        } else when {
             stopAudio -> "已停止播放"
             playSong == PLAY_SONG_NEXT -> "已切到下一首"
             playSong == PLAY_SONG_PREV -> "已切到上一首"
@@ -745,23 +933,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun applyHostFromInput() {
-        val host = normalizeConnectionTarget(etHost.text.toString())
-        currentHost = host
-        saveHost(host)
-        val display = displayConnectionTarget(host)
-        etHost.setText(display)
-        tvHostDisplay.text = display
-        applyingHost = true
-        reconnectAll()
-    }
-
     private var lastSentCommandJson: String = ""
     private var lastSentCommandAtMs: Long = 0L
 
     private fun sendCommand(force: Boolean = false) {
         val hadSpeakerVolumeDirty = speakerVolumeDirty
-        val cmd = buildJsonCommand()
+        val cmd = buildJsonCommand(includeSpeakerVolume = hadSpeakerVolumeDirty)
         val nowMs = SystemClock.elapsedRealtime()
         if (!CommandSendPolicy.shouldSend(
                 force = force,
@@ -776,53 +953,38 @@ class MainActivity : AppCompatActivity() {
         ) {
             return
         }
-        lastSentCommandJson = cmd
-        lastSentCommandAtMs = nowMs
-        sendJsonCommand(cmd)
-    }
-
-    private fun sendJsonCommand(cmd: String) {
-        val cmdBytes = cmd.toByteArray(StandardCharsets.UTF_8)
-        val payload = ByteArray(1 + cmdBytes.size)
-        payload[0] = RaspbotProtocol.APP_CMD_PREFIX
-        System.arraycopy(cmdBytes, 0, payload, 1, payload.size - 1)
-
-        if (connectionClient.usingCloudSignaling) {
-            if (webRtcClient.isCommandChannelOpen()) {
-                webRtcClient.sendCommandJson(cmd)
+        if (sendJsonCommand(cmd)) {
+            lastSentCommandJson = cmd
+            lastSentCommandAtMs = nowMs
+            if (hadSpeakerVolumeDirty) {
+                speakerVolumeDirty = false
             }
-        } else if (connectionClient.isConnected()) {
-            connectionClient.sendBinary(payload)
-        } else if (webRtcClient.isCommandChannelOpen()) {
-            webRtcClient.sendCommandJson(cmd)
         }
     }
 
-    private fun buildJsonCommand(): String {
+    private fun sendJsonCommand(cmd: String): Boolean {
+        return if (webRtcClient.isCommandChannelOpen()) {
+            webRtcClient.sendCommandJson(cmd)
+        } else {
+            false
+        }
+    }
+
+    private fun buildJsonCommand(includeSpeakerVolume: Boolean): String {
         val obj = JsonObject()
         addAuthToken(obj)
-        if (!trackingMode) {
-            obj.addProperty("source", "app")
-        }
+        obj.addProperty("source", if (trackingMode) "app_auto" else "app")
         obj.addProperty("action", currentAction)
         obj.addProperty("servo_angle", servoAngle1)
         obj.addProperty("servo_angle2", servoAngle2)
         obj.addProperty("speed", speed)
-        if (speakerVolumeDirty) {
+        if (includeSpeakerVolume) {
             obj.addProperty("audio_volume", speakerVolume)
-            speakerVolumeDirty = false
         }
         obj.addProperty("tracking_mode", trackingMode)
         obj.addProperty("left_speed", speed)
         obj.addProperty("right_speed", speed)
         return gson.toJson(obj)
-    }
-
-    private fun addAuthToken(obj: JsonObject) {
-        val token = BuildConfig.RASPBOT_AUTH_TOKEN.trim()
-        if (token.isNotBlank()) {
-            obj.addProperty("auth_token", token)
-        }
     }
 
     private var sendCommandRunnable: Runnable? = null
@@ -844,16 +1006,6 @@ class MainActivity : AppCompatActivity() {
         sendCommandRunnable = null
     }
 
-    private fun sendTextPayload(text: String): Boolean {
-        if (webRtcClient.sendText(text)) {
-            return true
-        }
-        if (connectionClient.sendText(text)) {
-            return true
-        }
-        return false
-    }
-
     private fun updateConnectionStatus(text: String) {
         mainHandler.post {
             tvConnection.text = text
@@ -861,14 +1013,29 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun reconnectAll() {
+        stopService(Intent(this, RaspbotAlarmService::class.java))
         speakerVolumeDirty = true
         speakerVolumeNeedsInitialCarSync = true
+        currentHost = RaspbotProtocol.CLOUD_CONNECTION_LABEL
+        imgVideoFrame.visibility = View.VISIBLE
+        rtcVideo.visibility = View.GONE
         webRtcClient.close()
         connectionClient.reconnect(currentHost)
     }
 
+    private fun reconnectVideoManually() {
+        Toast.makeText(this, "正在重新连接视频", Toast.LENGTH_SHORT).show()
+        updateConnectionStatus("重新连接中...")
+        updateVideoStatus("重新连接中")
+        reconnectAll()
+    }
+
     private fun handleVideoFrame(jpeg: ByteArray) {
         val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return
+        if (!videoFrameReceived) {
+            videoFrameReceived = true
+            updateConnectionStatus("● 在线")
+        }
         mainHandler.post {
             imgVideoFrame.visibility = View.VISIBLE
             rtcVideo.visibility = View.GONE
@@ -896,6 +1063,10 @@ class MainActivity : AppCompatActivity() {
                 RaspbotProtocol.TYPE_WEBRTC_ICE -> {
                     Log.d(TAG, "WebRTC ice received")
                     webRtcClient.handleIce(obj)
+                }
+                "oss_list_result", "oss_download_result" -> {
+                    val type = obj.get("type").asString
+                    ossImageLoader.handleSignalResponse(type, obj)
                 }
                 "ping", "join", "joined" -> Unit
                 else -> handleEnvJson(text)
@@ -948,11 +1119,13 @@ class MainActivity : AppCompatActivity() {
 
             // temperature
             val temp = asFloatOrNull(obj.get("temp_c"))
-            if (temp != null && temp != lastDispTemp) {
-                lastDispTemp = temp
-                mainHandler.post {
-                    tvTemp.text = "${String.format("%.1f", temp)}"
-                    tvHomeTemp.text = "${temp.toInt()}°"
+            if (temp != null) {
+                if (temp != lastDispTemp) {
+                    lastDispTemp = temp
+                    mainHandler.post {
+                        tvTemp.text = "${String.format("%.1f", temp)}"
+                        tvHomeTemp.text = "${temp.toInt()}°"
+                    }
                 }
                 appendTrendSample(trendTemp, temp, nowMs)
                 trendChanged = true
@@ -960,11 +1133,13 @@ class MainActivity : AppCompatActivity() {
 
             // light
             val lux = asIntOrNull(obj.get("light_lux"))
-            if (lux != null && lux != lastDispLux) {
-                lastDispLux = lux
-                mainHandler.post {
-                    tvLightLux.text = lux.toString()
-                    tvHomeLight.text = lux.toString()
+            if (lux != null) {
+                if (lux != lastDispLux) {
+                    lastDispLux = lux
+                    mainHandler.post {
+                        tvLightLux.text = lux.toString()
+                        tvHomeLight.text = lux.toString()
+                    }
                 }
                 appendTrendSample(trendLight, lux.toFloat(), nowMs)
                 trendChanged = true
@@ -972,13 +1147,17 @@ class MainActivity : AppCompatActivity() {
 
             // smoke
             val smoke = asIntOrNull(obj.get("smoke"))
-            if (smoke != null && smoke != lastDispSmoke) {
-                lastDispSmoke = smoke
-                mainHandler.post {
-                    tvSmoke.text = smoke.toString()
-                    tvHomeSmoke.text = if (smoke > AlarmPolicy.SMOKE_ALARM_LEVEL) "异常" else smoke.toString()
-                    tvHomeSmoke.setTextColor(if (smoke > AlarmPolicy.SMOKE_ALARM_LEVEL) Color.parseColor("#C9A84A") else Color.parseColor("#F0ECE4"))
+            if (smoke != null) {
+                if (smoke != lastDispSmoke) {
+                    lastDispSmoke = smoke
+                    mainHandler.post {
+                        tvSmoke.text = smoke.toString()
+                        tvHomeSmoke.text = if (smoke > AlarmPolicy.SMOKE_ALARM_LEVEL) "异常" else smoke.toString()
+                        tvHomeSmoke.setTextColor(if (smoke > AlarmPolicy.SMOKE_ALARM_LEVEL) Color.parseColor("#C9A84A") else Color.parseColor("#F0ECE4"))
+                    }
                 }
+                appendTrendSample(trendSmoke, smoke.toFloat(), nowMs)
+                trendChanged = true
             }
 
             // distance
@@ -990,6 +1169,7 @@ class MainActivity : AppCompatActivity() {
                     mainHandler.post {
                         tvDistance.text = "${distInt}cm"
                         tvHomeDistance.text = distInt.toString()
+                        updateManualDistance(distInt)
                     }
                 }
                 appendTrendSample(trendDistance, dist, nowMs)
@@ -1013,15 +1193,27 @@ class MainActivity : AppCompatActivity() {
             // crying
             val crying = asBooleanOrNull(obj.get("crying"))
             val cryScore = asIntOrNull(obj.get("cry_score"))
-            if (crying != null && crying != lastDispCrying) {
-                lastDispCrying = crying
+            if (cryScore != null) {
                 mainHandler.post {
-                    tvCry.text = if (crying) "检测" else "正常"
-                    tvCry.setTextColor(if (crying) Color.parseColor("#D45A5A") else Color.parseColor("#7AB88A"))
+                    tvCryScore.text = if (crying == true) {
+                        "持续哭声 分数$cryScore"
+                    } else {
+                        "哭声分数 $cryScore"
+                    }
                 }
             }
-            if (cryScore != null) {
-                mainHandler.post { tvCryScore.text = "哭声概率 $cryScore%" }
+
+            val batteryStatus = asStringOrNull(obj.get("battery_status"))
+            val batteryDisplay = buildBatteryDisplay(batteryStatus)
+            if (batteryDisplay != null && batteryDisplay != lastDispBattery) {
+                lastDispBattery = batteryDisplay
+                mainHandler.post {
+                    tvBattery.text = batteryDisplay
+                    tvBattery.setTextColor(
+                        if (batteryStatus.equals("LOW", ignoreCase = true)) Color.parseColor("#D45A5A")
+                        else Color.parseColor("#A09888")
+                    )
+                }
             }
 
             // fps
@@ -1036,8 +1228,9 @@ class MainActivity : AppCompatActivity() {
 
             // alarm
             val alarm = AlarmPolicy.buildAlarmMessage(obj, dist, smoke, temp, lux, crying, cryScore)
+            updateSafetyStatus(alarm, crying, cryScore)
             if (!alarm.isNullOrBlank()) {
-                recordAlarm(alarm, temp, dist, smoke, lux, crying, cryScore)
+                recordAlarm(alarm, temp, dist, smoke, lux, crying, cryScore, batteryStatus)
             } else {
                 lastAlarmSignature = ""
             }
@@ -1048,6 +1241,50 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun updateSafetyStatus(alarm: String?, crying: Boolean?, cryScore: Int?) {
+        val summary = if (alarm.isNullOrBlank()) "正常" else alarm
+        if (summary == lastSafetySummary && crying == lastDispCrying && cryScore == lastSafetyCryScore) return
+        lastSafetySummary = summary
+        lastDispCrying = crying
+        lastSafetyCryScore = cryScore
+        val isAlarm = !alarm.isNullOrBlank()
+        mainHandler.post {
+            tvCry.text = summary
+            tvCry.setTextColor(if (isAlarm) Color.parseColor("#D45A5A") else Color.parseColor("#7AB88A"))
+            tvCryScore.text = when {
+                crying == true && cryScore != null -> "持续哭声 分数$cryScore"
+                cryScore != null -> "哭声分数 $cryScore"
+                isAlarm -> "请查看报警详情"
+                else -> "安全状态正常"
+            }
+            updateControlStatusText()
+        }
+    }
+
+    private fun updateControlStatusText() {
+        val safety = lastSafetySummary
+        tvTrackingModeStatus.text = when {
+            safety.isNotBlank() && safety != "正常" -> "安全警报：$safety"
+            trackingMode -> "自动追踪运行中｜安全状态正常"
+            else -> "手动控制｜安全状态正常"
+        }
+        tvTrackingModeStatus.setTextColor(
+            if (safety.isNotBlank() && safety != "正常") Color.parseColor("#D45A5A")
+            else Color.parseColor("#F0ECE4")
+        )
+    }
+
+    private fun updateManualDistance(distCm: Int) {
+        tvManualDistance.text = "${distCm}cm"
+        tvManualDistance.setTextColor(
+            when {
+                distCm <= 5 -> Color.parseColor("#D45A5A")
+                distCm <= 20 -> Color.parseColor("#C9A84A")
+                else -> Color.parseColor("#F0ECE4")
+            }
+        )
+    }
+
     private fun recordAlarm(
         alarm: String,
         temp: Float?,
@@ -1055,48 +1292,32 @@ class MainActivity : AppCompatActivity() {
         smoke: Int?,
         lux: Int?,
         crying: Boolean?,
-        cryScore: Int?
+        cryScore: Int?,
+        batteryStatus: String?
     ) {
-        if (alarm == lastAlarmSignature) return
+        val nowMs = System.currentTimeMillis()
         lastAlarmSignature = alarm
-        lastAlarmAtMs = System.currentTimeMillis()
         latestAlarmText = alarm
-        val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(lastAlarmAtMs))
-        val details = buildAlertDetails(temp, dist, smoke, lux, crying, cryScore)
-        val entry = if (details.isBlank()) {
-            "[$time] $alarm"
-        } else {
-            "[$time] $alarm\n$details"
+        val details = buildAlertDetails(temp, dist, smoke, lux, crying, cryScore, batteryStatus)
+        val event = AlarmEventStore.appendIfAllowed(
+            this, alarm, details, nowMs,
+            temp = temp, dist = dist, smoke = smoke, lux = lux,
+            crying = crying, cryScore = cryScore
+        ) ?: return
+        lastAlarmAtMs = nowMs
+        lastRecordedAlarmAtMs = nowMs
+        alarmEvents.add(0, event)
+        if (alarmEvents.size > AlarmEventStore.MAX_ALERT_HISTORY) {
+            alarmEvents.removeAt(alarmEvents.size - 1)
         }
-        synchronized(alertHistory) {
-            alertHistory.addLast(entry)
-            if (alertHistory.size > MAX_ALERT_HISTORY) alertHistory.removeFirst()
-            alertCount++
-        }
+        alertCount = alarmEvents.size
+        unreadAlertCount++
         mainHandler.post {
             updateAlertBanner()
             tvAlertSummary.text = alertCount.toString()
-            tvAlertHistory.text = alertHistory.joinToString("\n\n")
+            addAlarmCard(event)
             showAlertNotification(alarm)
         }
-    }
-
-    private fun buildAlertDetails(
-        temp: Float?,
-        dist: Float?,
-        smoke: Int?,
-        lux: Int?,
-        crying: Boolean?,
-        cryScore: Int?
-    ): String {
-        val parts = ArrayList<String>()
-        if (dist != null) parts.add("距离 ${dist.toInt()}cm")
-        if (temp != null) parts.add("室温 ${String.format("%.1f", temp)}°C")
-        if (lux != null) parts.add("光照 ${lux}lux")
-        if (smoke != null) parts.add("烟雾 $smoke")
-        if (cryScore != null) parts.add("哭声 $cryScore%")
-        else if (crying == true) parts.add("哭声 检测")
-        return parts.joinToString(" · ")
     }
 
     private fun updateCareSummary(
@@ -1108,9 +1329,12 @@ class MainActivity : AppCompatActivity() {
     ) {
         if (!::tvCareSummary.isInitialized) return
         val summary = buildCareSummary(alarm, dist, temp, crying, cryScore)
+        val hasAlarm = !alarm.isNullOrBlank()
+        if (summary == lastCareSummary && hasAlarm == lastCareHasAlarm) return
+        lastCareSummary = summary
+        lastCareHasAlarm = hasAlarm
         mainHandler.post {
             tvCareSummary.text = summary
-            val hasAlarm = !alarm.isNullOrBlank()
             tvCareSummary.setTextColor(if (hasAlarm) Color.parseColor("#C9A84A") else Color.parseColor("#F0ECE4"))
         }
     }
@@ -1131,6 +1355,7 @@ class MainActivity : AppCompatActivity() {
                 alarm.contains("光照过强") -> "光照过强，小车已保守跟随"
                 alarm.contains("光照变化") -> "光照变化明显，小车已暂停车身跟随"
                 alarm.contains("距离过近") -> "距离偏近，小车会给宝宝留出空间"
+                alarm.contains("电池") -> "小车供电偏低，建议检查电源"
                 else -> alarm
             }
         }
@@ -1156,15 +1381,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateAlertBanner() {
-        if (alertCount > 0) {
+        if (unreadAlertCount > 0) {
             layoutAlarmBanner.visibility = View.VISIBLE
-            tvAlarmText.text = "有 $alertCount 条报警"
-            tvAlertCount.text = "${alertCount}条"
-            tvAlarmCount.text = "${alertCount}条"
+            tvAlarmText.text = "有 $unreadAlertCount 条新报警"
+            tvAlertCount.text = "${unreadAlertCount}条"
+            tvAlarmCount.text = "${unreadAlertCount}条"
             tvAlertCount.setTextColor(Color.parseColor("#D45A5A"))
         } else {
             layoutAlarmBanner.visibility = View.GONE
+            tvAlertCount.text = "0"
+            tvAlarmCount.text = "0条"
+            tvAlertCount.setTextColor(Color.parseColor("#706858"))
         }
+    }
+
+    private fun acknowledgeHomeAlerts() {
+        if (unreadAlertCount <= 0) return
+        unreadAlertCount = 0
+        updateAlertBanner()
     }
 
     private fun updateTrendChart() {
@@ -1172,7 +1406,8 @@ class MainActivity : AppCompatActivity() {
         trendView.setSeries(
             downsampleTrend(trendDistance, nowMs),
             downsampleTrend(trendTemp, nowMs),
-            downsampleTrend(trendLight, nowMs)
+            downsampleTrend(trendLight, nowMs),
+            downsampleTrend(trendSmoke, nowMs)
         )
     }
 
@@ -1203,16 +1438,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun showAlertNotification(message: String) {
         try {
-            val notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.ic_dialog_alert)
-                .setContentTitle("Raspbot 报警")
-                .setContentText(message)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setAutoCancel(true)
-                .build()
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
-                NotificationManagerCompat.from(this).notify(NOTIFICATION_REQUEST_CODE, notification)
-            }
+            AlarmNotifier.showAlarm(this, message)
         } catch (_: Exception) {}
+    }
+
+    private fun startBackgroundAlarmService() {
+        val intent = Intent(this, RaspbotAlarmService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
     }
 }

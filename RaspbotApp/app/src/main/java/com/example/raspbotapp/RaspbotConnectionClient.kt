@@ -7,7 +7,6 @@ import okhttp3.Request
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
-import okio.ByteString.Companion.toByteString
 import java.net.Proxy
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -22,7 +21,7 @@ class RaspbotConnectionClient(
         fun isAlive(): Boolean
         fun isApplyingHost(): Boolean
         fun onConnecting()
-        fun onOpen(usingCloudSignaling: Boolean)
+        fun onOpen()
         fun onText(text: String)
         fun onVideoFrame(jpeg: ByteArray)
         fun onEnvJson(json: String)
@@ -43,19 +42,16 @@ class RaspbotConnectionClient(
     private var reconnectRunnable: Runnable? = null
     @Volatile
     private var connected = false
-    var usingCloudSignaling = true
-        private set
 
-    fun connect(target: String) {
+    fun connect(target: String, dataOnly: Boolean = false) {
         reconnectRunnable?.let { mainHandler.removeCallbacks(it) }
-        val url = buildConnectionUrl(target)
-        usingCloudSignaling = isCloudSignalingUrl(url)
+        val url = buildConnectionUrl(target, dataOnly)
         callbacks.onConnecting()
         val request = Request.Builder().url(url).build()
         webSocket = wsClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: okhttp3.Response) {
                 connected = true
-                callbacks.onOpen(usingCloudSignaling)
+                callbacks.onOpen()
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
@@ -78,7 +74,7 @@ class RaspbotConnectionClient(
                 connected = false
                 Log.d(TAG, "WebSocket closed code=$code reason=$reason")
                 callbacks.onClosed()
-                scheduleReconnect(target)
+                scheduleReconnect(target, dataOnly)
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: okhttp3.Response?) {
@@ -86,28 +82,18 @@ class RaspbotConnectionClient(
                 Log.w(TAG, "WebSocket failure url=$url message=${t.message}", t)
                 if (!callbacks.isApplyingHost()) {
                     callbacks.onFailure(t.message ?: "网络错误")
-                    scheduleReconnect(target)
+                    scheduleReconnect(target, dataOnly)
                 }
             }
         })
     }
 
-    fun reconnect(target: String) {
+    fun reconnect(target: String, dataOnly: Boolean = false) {
         reconnectRunnable?.let { mainHandler.removeCallbacks(it) }
         connected = false
         webSocket?.close(1000, "Reconnecting")
         webSocket = null
-        connect(target)
-    }
-
-    fun sendBinary(payload: ByteArray): Boolean {
-        if (!connected) return false
-        return webSocket?.send(payload.toByteString()) == true
-    }
-
-    fun sendText(text: String): Boolean {
-        if (!connected || usingCloudSignaling) return false
-        return webSocket?.send(text) == true
+        connect(target, dataOnly)
     }
 
     fun sendSignaling(text: String): Boolean {
@@ -131,23 +117,28 @@ class RaspbotConnectionClient(
         wsClient.dispatcher.executorService.shutdown()
     }
 
-    private fun scheduleReconnect(target: String) {
+    private fun scheduleReconnect(target: String, dataOnly: Boolean) {
         if (!callbacks.isAlive() || callbacks.isApplyingHost()) return
-        val r = Runnable { connect(target) }
+        val r = Runnable { connect(target, dataOnly) }
         reconnectRunnable = r
         mainHandler.postDelayed(r, reconnectMs)
     }
 }
 
-fun buildConnectionUrl(input: String): String {
+fun buildConnectionUrl(input: String, dataOnly: Boolean = false): String {
     val value = input.trim()
-    if (isCloudConnectionTarget(value)) return RaspbotProtocol.DEFAULT_SIGNALING_URL
-    val url = if (value.startsWith("ws://") || value.startsWith("wss://")) {
+    val baseUrl = if (value.startsWith("ws://") || value.startsWith("wss://")) {
         value
     } else {
-        "ws://$value:${RaspbotProtocol.LOCAL_WS_PORT}"
+        RaspbotProtocol.DEFAULT_SIGNALING_URL
     }
-    return appendAuthToken(url)
+    return appendConnectionFlags(appendAuthToken(baseUrl), dataOnly)
+}
+
+private fun appendConnectionFlags(url: String, dataOnly: Boolean): String {
+    if (!dataOnly) return url
+    val separator = if (url.contains("?")) "&" else "?"
+    return "${url}${separator}data_only=1"
 }
 
 private fun appendAuthToken(url: String): String {
@@ -155,29 +146,4 @@ private fun appendAuthToken(url: String): String {
     if (token.isBlank()) return url
     val separator = if (url.contains("?")) "&" else "?"
     return "$url${separator}token=${URLEncoder.encode(token, "UTF-8")}"
-}
-
-fun isCloudSignalingUrl(url: String): Boolean {
-    return url.contains(":8765") || url.contains("/pc_room")
-}
-
-fun normalizeConnectionTarget(input: String): String {
-    val value = input.trim()
-    return if (isCloudConnectionTarget(value)) RaspbotProtocol.CLOUD_CONNECTION_LABEL else value
-}
-
-fun displayConnectionTarget(input: String): String {
-    return if (isCloudConnectionTarget(input)) RaspbotProtocol.CLOUD_CONNECTION_LABEL else input.trim()
-}
-
-fun isCloudConnectionTarget(input: String): Boolean {
-    val value = input.trim()
-    if (value.isBlank()) return true
-    return value.equals(RaspbotProtocol.CLOUD_CONNECTION_LABEL, ignoreCase = true)
-            || value.equals("cloud", ignoreCase = true)
-            || value.equals("default", ignoreCase = true)
-            || value == RaspbotProtocol.DEFAULT_SIGNALING_URL
-            || value == RaspbotProtocol.CLOUD_HOST
-            || value == "${RaspbotProtocol.CLOUD_HOST}:${RaspbotProtocol.CLOUD_PORT}"
-            || value == "${RaspbotProtocol.CLOUD_HOST}/pc_room"
 }

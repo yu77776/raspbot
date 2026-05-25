@@ -47,6 +47,15 @@ class SimpleTrendView @JvmOverloads constructor(
         pathEffect = DashPathEffect(floatArrayOf(dp(6f), dp(4f)), 0f)
     }
 
+    private val smokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#9AD8B8")
+        style = Paint.Style.STROKE
+        strokeWidth = dp(2.2f)
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+        pathEffect = DashPathEffect(floatArrayOf(dp(2f), dp(5f)), 0f)
+    }
+
     private val legendDistancePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = distancePaint.color
         textSize = dp(10f)
@@ -59,6 +68,10 @@ class SimpleTrendView @JvmOverloads constructor(
         color = lightPaint.color
         textSize = dp(10f)
     }
+    private val legendSmokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = smokePaint.color
+        textSize = dp(10f)
+    }
     private val noDataPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#50A09888")
         textSize = dp(12f)
@@ -68,11 +81,13 @@ class SimpleTrendView @JvmOverloads constructor(
     private var distanceSeries: List<Float> = emptyList()
     private var tempSeries: List<Float> = emptyList()
     private var lightSeries: List<Float> = emptyList()
+    private var smokeSeries: List<Float> = emptyList()
 
-    fun setSeries(distance: List<Float>, temp: List<Float>, light: List<Float>) {
+    fun setSeries(distance: List<Float>, temp: List<Float>, light: List<Float>, smoke: List<Float> = emptyList()) {
         distanceSeries = distance
         tempSeries = temp
         lightSeries = light
+        smokeSeries = smoke
         invalidate()
     }
 
@@ -94,7 +109,7 @@ class SimpleTrendView @JvmOverloads constructor(
         canvas.drawRect(left, top, right, bottom, gridPaint)
         canvas.drawLine(left, top + drawH / 2f, right, top + drawH / 2f, gridPaint)
 
-        val hasData = distanceSeries.size >= 2 || tempSeries.size >= 2 || lightSeries.size >= 2
+        val hasData = distanceSeries.size >= 2 || tempSeries.size >= 2 || lightSeries.size >= 2 || smokeSeries.size >= 2
         if (!hasData) {
             canvas.drawText("等待遥测数据…", left + drawW / 2f, top + drawH / 2f, noDataPaint)
             return
@@ -103,11 +118,13 @@ class SimpleTrendView @JvmOverloads constructor(
         drawSeries(canvas, distanceSeries, distancePaint, left, top, drawW, drawH, 0f, 200f)
         drawSeries(canvas, tempSeries, tempPaint, left, top, drawW, drawH, 0f, 50f)
         drawSeries(canvas, lightSeries, lightPaint, left, top, drawW, drawH, 0f, 1000f)
+        drawSeries(canvas, smokeSeries, smokePaint, left, top, drawW, drawH, 0f, 255f)
 
         val legendY = h - dp(3f)
         canvas.drawText("距离", left, legendY, legendDistancePaint)
         canvas.drawText("温度", left + dp(42f), legendY, legendTempPaint)
         canvas.drawText("光照", left + dp(86f), legendY, legendLightPaint)
+        canvas.drawText("烟雾", left + dp(130f), legendY, legendSmokePaint)
     }
 
     private fun drawSeries(
