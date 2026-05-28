@@ -28,6 +28,8 @@ raspbot_remote/songs/
 
 # Android / Gradle generated files
 RaspbotApp/.gradle/
+RaspbotApp/.gradle-user-home/
+RaspbotApp/.kotlin/
 RaspbotApp/build/
 RaspbotApp/app/build/
 RaspbotApp/local.properties
@@ -44,10 +46,43 @@ RaspbotApp/.idea/assetWizardSettings.xml
 *.iml
 
 # Editor / OS noise
+.claude/
+.codex_doc_audit/
+.codex_tmp/
 .idea/
 .vscode/
+.vs/
 .DS_Store
 Thumbs.db
+CLAUDE.md
+
+# Local generated scratch/artifacts
+tmp/
+icon_candidates/
+_temp_name.txt
+_thesis_extract_paras.json
+verify_results.json
+omx_*_report.txt
+CUsers26917.claudeprojectsE----asr_head.py
+
+# Local thesis/reference workspace
+文献/
+template.doc
+embedded_interview_review_zhaoguoyu.*
+resume_embedded_zhaoguoyu.docx
+Raspbot项目完整审查报告.docx
+
+# Local thesis generation outputs
+*.before-format-check.docx
+*.before-nature-polish.docx
+*_latex无伪代码.docx
+*_原生公式.docx
+*_修改方案版.docx
+*_严格格式版*.docx
+
+# Large local datasets / generated model workspaces
+yolo/
+raspbot1/best/
 
 # Legacy backups
 *.bak

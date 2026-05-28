@@ -28,7 +28,7 @@ PC startup behavior:
 
 ```bash
 cd /home-or-windows-path/raspbot1
-python pc_client_ws.py
+python -m pc_modules.app
 ```
 
 The PC client listens on UDP `5002` for about 3 seconds. If a car is found, it
@@ -38,5 +38,5 @@ connects to the broadcast `ip:port`. If not found, it falls back to
 Disable discovery when needed:
 
 ```bash
-python pc_client_ws.py --no-discover --host 10.188.152.100 --port 5001
+python -m pc_modules.app --no-discover --host 10.188.152.100 --port 5001
 ```

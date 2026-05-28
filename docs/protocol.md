@@ -63,6 +63,10 @@ Environment packets are sent inside `0x03 + json` or through the WebRTC `env` Da
 | `alarm` | string | `+`, `;`, or `,` separated alarm tokens. |
 | `imu` | object or null | `{roll,pitch,yaw,yaw_rate,healthy,calibrated}`. `null` means IMU unavailable. |
 | `fps` | int | Camera FPS. |
+| `battery_percent` | int | `0` when Pi undervoltage is detected, otherwise `100`. Kept separate from ADC channel 3 because that channel is used by the physical volume knob. |
+| `battery_status` | string | `LOW` when Pi undervoltage is detected, otherwise `OK`. |
+
+PC-side YAMNet cry detection is smoothed before it reaches this packet. A cry alarm requires sustained high score for the configured trigger window and clears only after the release window, so the App should present `crying=true` as a sustained cry state rather than a single-frame spike.
 
 ## Alarm Tokens
 

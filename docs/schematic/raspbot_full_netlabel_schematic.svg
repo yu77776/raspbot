@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1900" height="1200" viewBox="0 0 1900 1200">
+<defs>
+  <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#111827"/></marker>
+  <style><![CDATA[
+    .title { font: 700 32px 'Microsoft YaHei','Noto Sans CJK SC',Arial,sans-serif; }
+    .subtitle { font: 400 18px 'Microsoft YaHei','Noto Sans CJK SC',Arial,sans-serif; }
+    .zoneTitle { font: 700 20px 'Microsoft YaHei','Noto Sans CJK SC',Arial,sans-serif; }
+    .boxTitle { font: 700 17px 'Microsoft YaHei','Noto Sans CJK SC',Arial,sans-serif; }
+    .boxText { font: 400 15px 'Microsoft YaHei','Noto Sans CJK SC',Arial,sans-serif; }
+    .net { font: 700 13px Consolas,'Microsoft YaHei',Arial,sans-serif; }
+    .tableTitle { font: 700 18px 'Microsoft YaHei','Noto Sans CJK SC',Arial,sans-serif; }
+    .foot { font: 400 14px 'Microsoft YaHei','Noto Sans CJK SC',Arial,sans-serif; }
+  ]]></style>
+</defs>
+<rect width="1900" height="1200" fill="#fff"/>
+<text x="950.0" y="48" text-anchor="middle" class="title" fill="#111">Raspbot 完整版外设接口电路原理图（网络标签分区版）</text>
+<text x="950.0" y="78" text-anchor="middle" class="subtitle" fill="#4b5563">论文用：保留电源/地/I2C/GPIO/ADC/CSI/USB 网络标签，避免跨区长线</text>
+<rect x="40" y="115" width="520" height="390" rx="10" fill="none" stroke="#2563eb" stroke-width="3" stroke-dasharray="12 8"/>
+<rect x="52" y="97" width="184" height="30" rx="5" fill="#fff"/>
+<text x="64" y="118" text-anchor="start" class="zoneTitle" fill="#2563eb">GPIO 直连区</text>
+
+<rect id="codex-pcf-zone-title-fix" x="52" y="526" width="285" height="32" rx="5" fill="#fff"/>
+<text x="64" y="548" text-anchor="start" class="zoneTitle" fill="#9333ea">PCF8591 模拟采集区</text>
+<rect x="40" y="545" width="520" height="430" rx="10" fill="none" stroke="#9333ea" stroke-width="3" stroke-dasharray="12 8"/>
+<rect x="52" y="527" width="274" height="30" rx="5" fill="#fff"/>
+<text x="64" y="548" text-anchor="start" class="zoneTitle" fill="#9333ea">PCF8591 模拟采集区</text>
+<rect x="620" y="115" width="480" height="860" rx="10" fill="none" stroke="#0f766e" stroke-width="3" stroke-dasharray="12 8"/>
+<rect x="632" y="97" width="274" height="30" rx="5" fill="#fff"/>
+<text x="644" y="118" text-anchor="start" class="zoneTitle" fill="#0f766e">树莓派 40Pin 主控区</text>
+<rect x="1160" y="115" width="580" height="500" rx="10" fill="none" stroke="#16a34a" stroke-width="3" stroke-dasharray="12 8"/>
+<rect x="1172" y="97" width="202" height="30" rx="5" fill="#fff"/>
+<text x="1184" y="118" text-anchor="start" class="zoneTitle" fill="#16a34a">I2C 总线外设区</text>
+<rect x="1160" y="655" width="580" height="320" rx="10" fill="none" stroke="#db2777" stroke-width="3" stroke-dasharray="12 8"/>
+<rect x="1172" y="637" width="310" height="30" rx="5" fill="#fff"/>
+<text x="1184" y="658" text-anchor="start" class="zoneTitle" fill="#db2777">专用接口区（非普通 GPIO）</text>
+<rect x="705" y="185" width="310" height="600" rx="6" fill="#f8fafc" stroke="#111827" stroke-width="2"/>
+<rect x="705" y="185" width="310" height="34" rx="6" fill="#0f766e"/>
+<text x="860.0" y="208" text-anchor="middle" class="boxTitle" fill="#fff">H1 Raspberry Pi 40Pin</text>
+<text x="721" y="243" text-anchor="start" class="boxText" fill="#111">供电：+5V, +3V3, GND</text>
+<text x="721" y="267" text-anchor="start" class="boxText" fill="#111">BOARD3 / BCM2  -&gt; I2C_SDA</text>
+<text x="721" y="291" text-anchor="start" class="boxText" fill="#111">BOARD5 / BCM3  -&gt; I2C_SCL</text>
+<text x="721" y="315" text-anchor="start" class="boxText" fill="#111">BOARD16 / BCM23 -&gt; US_TRIG</text>
+<text x="721" y="339" text-anchor="start" class="boxText" fill="#111">BOARD18 / BCM24 -&gt; US_ECHO</text>
+<text x="721" y="363" text-anchor="start" class="boxText" fill="#111">BOARD7  / BCM4  -&gt; TRACK_1</text>
+<text x="721" y="387" text-anchor="start" class="boxText" fill="#111">BOARD11 / BCM17 -&gt; TRACK_2</text>
+<text x="721" y="411" text-anchor="start" class="boxText" fill="#111">BOARD13 / BCM27 -&gt; TRACK_3</text>
+<text x="721" y="435" text-anchor="start" class="boxText" fill="#111">BOARD15 / BCM22 -&gt; TRACK_4</text>
+<text x="721" y="459" text-anchor="start" class="boxText" fill="#111">BOARD32 / BCM12 -&gt; BUZZER_PWM</text>
+<text x="721" y="483" text-anchor="start" class="boxText" fill="#111">CSI: CSI_CAM</text>
+<text x="721" y="507" text-anchor="start" class="boxText" fill="#111">USB: USB_MIC / USB_SPK_L / USB_SPK_R</text>
+<rect x="80" y="160" width="360" height="116" rx="6" fill="#eff6ff" stroke="#111827" stroke-width="2"/>
+<rect x="80" y="160" width="360" height="34" rx="6" fill="#2563eb"/>
+<text x="260.0" y="183" text-anchor="middle" class="boxTitle" fill="#fff">U1 HC-SR04 超声波</text>
+<text x="96" y="218" text-anchor="start" class="boxText" fill="#111">VCC -&gt; +5V</text>
+<text x="96" y="242" text-anchor="start" class="boxText" fill="#111">GND -&gt; GND</text>
+<text x="96" y="266" text-anchor="start" class="boxText" fill="#111">TRIG -&gt; US_TRIG</text>
+<text x="96" y="290" text-anchor="start" class="boxText" fill="#111">ECHO -&gt; US_ECHO</text>
+<rect x="80" y="305" width="360" height="126" rx="6" fill="#eff6ff" stroke="#111827" stroke-width="2"/>
+<rect x="80" y="305" width="360" height="34" rx="6" fill="#2563eb"/>
+<text x="260.0" y="328" text-anchor="middle" class="boxTitle" fill="#fff">U5 四路红外循迹接口</text>
+<text x="96" y="363" text-anchor="start" class="boxText" fill="#111">VCC -&gt; +5V</text>
+<text x="96" y="387" text-anchor="start" class="boxText" fill="#111">GND -&gt; GND</text>
+<text x="96" y="411" text-anchor="start" class="boxText" fill="#111">D1..D4 -&gt; TRACK_1..TRACK_4</text>
+<text x="96" y="435" text-anchor="start" class="boxText" fill="#111">输入：BOARD7/11/13/15</text>
+<rect x="80" y="445" width="430" height="132" rx="6" fill="#eff6ff" stroke="#111827" stroke-width="2"/>
+<rect x="80" y="445" width="430" height="34" rx="6" fill="#2563eb"/>
+<text x="295.0" y="468" text-anchor="middle" class="boxTitle" fill="#fff">BUZZER1 蜂鸣器驱动</text>
+<text x="96" y="503" text-anchor="start" class="boxText" fill="#111">BUZZER_PWM -&gt; R7(1K) -&gt; Q1(S8050)</text>
+<text x="96" y="527" text-anchor="start" class="boxText" fill="#111">Q1 发射极 -&gt; GND</text>
+<text x="96" y="551" text-anchor="start" class="boxText" fill="#111">BUZZER+ -&gt; +5V（论文推荐供电）</text>
+<text x="96" y="575" text-anchor="start" class="boxText" fill="#111">D1/C1 保留为局部保护/滤波</text>
+<rect x="80" y="605" width="360" height="170" rx="6" fill="#faf5ff" stroke="#111827" stroke-width="2"/>
+<rect x="80" y="605" width="360" height="34" rx="6" fill="#9333ea"/>
+<text x="260.0" y="628" text-anchor="middle" class="boxTitle" fill="#fff">U2 PCF8591 ADC</text>
+<text x="96" y="663" text-anchor="start" class="boxText" fill="#111">VCC -&gt; +3V3 / GND -&gt; GND</text>
+<text x="96" y="687" text-anchor="start" class="boxText" fill="#111">SDA -&gt; I2C_SDA</text>
+<text x="96" y="711" text-anchor="start" class="boxText" fill="#111">SCL -&gt; I2C_SCL</text>
+<text x="96" y="735" text-anchor="start" class="boxText" fill="#111">AIN0 -&gt; AIN0_LIGHT</text>
+<text x="96" y="759" text-anchor="start" class="boxText" fill="#111">AIN1 -&gt; AIN1_TEMP</text>
+<text x="96" y="783" text-anchor="start" class="boxText" fill="#111">AIN2 -&gt; AIN2_SMOKE</text>
+<text x="96" y="807" text-anchor="start" class="boxText" fill="#111">AIN3 -&gt; AIN3_VOLUME</text>
+<rect x="80" y="810" width="200" height="110" rx="6" fill="#faf5ff" stroke="#111827" stroke-width="2"/>
+<rect x="80" y="810" width="200" height="34" rx="6" fill="#9333ea"/>
+<text x="180.0" y="833" text-anchor="middle" class="boxTitle" fill="#fff">光照/温度</text>
+<text x="96" y="868" text-anchor="start" class="boxText" fill="#111">GL5528 -&gt; AIN0_LIGHT</text>
+<text x="96" y="892" text-anchor="start" class="boxText" fill="#111">NTC -&gt; AIN1_TEMP</text>
+<text x="96" y="916" text-anchor="start" class="boxText" fill="#111">+3V3 / GND</text>
+<rect x="315" y="810" width="205" height="110" rx="6" fill="#faf5ff" stroke="#111827" stroke-width="2"/>
+<rect x="315" y="810" width="205" height="34" rx="6" fill="#9333ea"/>
+<text x="417.5" y="833" text-anchor="middle" class="boxTitle" fill="#fff">烟雾/音量</text>
+<text x="331" y="868" text-anchor="start" class="boxText" fill="#111">MQ-2 -&gt; AIN2_SMOKE</text>
+<text x="331" y="892" text-anchor="start" class="boxText" fill="#111">电位器 -&gt; AIN3_VOLUME</text>
+<text x="331" y="916" text-anchor="start" class="boxText" fill="#111">+5V/+3V3/GND</text>
+<rect x="1210" y="160" width="430" height="112" rx="6" fill="#f0fdf4" stroke="#111827" stroke-width="2"/>
+<rect x="1210" y="160" width="430" height="34" rx="6" fill="#16a34a"/>
+<text x="1425.0" y="183" text-anchor="middle" class="boxTitle" fill="#fff">Yahboom 电机/舵机扩展板</text>
+<text x="1226" y="218" text-anchor="start" class="boxText" fill="#111">I2C 地址：0x16</text>
+<text x="1226" y="242" text-anchor="start" class="boxText" fill="#111">SDA/SCL -&gt; I2C_SDA/I2C_SCL</text>
+<text x="1226" y="266" text-anchor="start" class="boxText" fill="#111">+5V / GND</text>
+<text x="1226" y="290" text-anchor="start" class="boxText" fill="#111">电机与舵机 PWM 由扩展板输出</text>
+<rect x="1210" y="300" width="430" height="92" rx="6" fill="#f0fdf4" stroke="#111827" stroke-width="2"/>
+<rect x="1210" y="300" width="430" height="34" rx="6" fill="#16a34a"/>
+<text x="1425.0" y="323" text-anchor="middle" class="boxTitle" fill="#fff">OLED1 SSD1306</text>
+<text x="1226" y="358" text-anchor="start" class="boxText" fill="#111">I2C 地址：0x3C</text>
+<text x="1226" y="382" text-anchor="start" class="boxText" fill="#111">SDA/SCL, +3V3, GND</text>
+<text x="1226" y="406" text-anchor="start" class="boxText" fill="#111">128x32 状态/表情显示</text>
+<rect x="1210" y="420" width="430" height="92" rx="6" fill="#f0fdf4" stroke="#111827" stroke-width="2"/>
+<rect x="1210" y="420" width="430" height="34" rx="6" fill="#16a34a"/>
+<text x="1425.0" y="443" text-anchor="middle" class="boxTitle" fill="#fff">U3 MPU6050 姿态传感器</text>
+<text x="1226" y="478" text-anchor="start" class="boxText" fill="#111">I2C 地址：0x68</text>
+<text x="1226" y="502" text-anchor="start" class="boxText" fill="#111">SDA/SCL, +3V3, GND</text>
+<text x="1226" y="526" text-anchor="start" class="boxText" fill="#111">三轴加速度/陀螺仪</text>
+<rect x="1210" y="540" width="430" height="72" rx="6" fill="#f0fdf4" stroke="#111827" stroke-width="2"/>
+<rect x="1210" y="540" width="430" height="34" rx="6" fill="#16a34a"/>
+<text x="1425.0" y="563" text-anchor="middle" class="boxTitle" fill="#fff">I2C 总线说明</text>
+<text x="1226" y="598" text-anchor="start" class="boxText" fill="#111">所有 I2C 外设共用 I2C_SDA / I2C_SCL；地址区分设备</text>
+<rect x="1210" y="700" width="300" height="86" rx="6" fill="#fdf2f8" stroke="#111827" stroke-width="2"/>
+<rect x="1210" y="700" width="300" height="34" rx="6" fill="#db2777"/>
+<text x="1360.0" y="723" text-anchor="middle" class="boxTitle" fill="#fff">CSI 摄像头</text>
+<text x="1226" y="758" text-anchor="start" class="boxText" fill="#111">CSI_CAM</text>
+<text x="1226" y="782" text-anchor="start" class="boxText" fill="#111">Picamera2 / libcamera</text>
+<text x="1226" y="806" text-anchor="start" class="boxText" fill="#111">不占普通 GPIO</text>
+<rect x="1210" y="820" width="230" height="86" rx="6" fill="#fdf2f8" stroke="#111827" stroke-width="2"/>
+<rect x="1210" y="820" width="230" height="34" rx="6" fill="#db2777"/>
+<text x="1325.0" y="843" text-anchor="middle" class="boxTitle" fill="#fff">USB 麦克风</text>
+<text x="1226" y="878" text-anchor="start" class="boxText" fill="#111">USB_MIC</text>
+<text x="1226" y="902" text-anchor="start" class="boxText" fill="#111">ALSA arecord</text>
+<text x="1226" y="926" text-anchor="start" class="boxText" fill="#111">16kHz mono PCM</text>
+<rect x="1480" y="820" width="230" height="86" rx="6" fill="#fdf2f8" stroke="#111827" stroke-width="2"/>
+<rect x="1480" y="820" width="230" height="34" rx="6" fill="#db2777"/>
+<text x="1595.0" y="843" text-anchor="middle" class="boxTitle" fill="#fff">USB 扬声器 x2</text>
+<text x="1496" y="878" text-anchor="start" class="boxText" fill="#111">USB_SPK_L</text>
+<text x="1496" y="902" text-anchor="start" class="boxText" fill="#111">USB_SPK_R</text>
+<text x="1496" y="926" text-anchor="start" class="boxText" fill="#111">pygame.mixer</text>
+<rect x="655" y="233" width="74" height="26" rx="4" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+<text x="692.0" y="251" text-anchor="middle" class="net" fill="#111827">+5V</text>
+<rect x="655" y="268" width="74" height="26" rx="4" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+<text x="692.0" y="286" text-anchor="middle" class="net" fill="#111827">+3V3</text>
+<rect x="655" y="303" width="74" height="26" rx="4" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+<text x="692.0" y="321" text-anchor="middle" class="net" fill="#111827">GND</text>
+<rect x="655" y="363" width="83" height="26" rx="4" fill="#fff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="696.5" y="381" text-anchor="middle" class="net" fill="#2563eb">US_TRIG</text>
+<rect x="655" y="398" width="83" height="26" rx="4" fill="#fff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="696.5" y="416" text-anchor="middle" class="net" fill="#2563eb">US_ECHO</text>
+<rect x="655" y="453" width="83" height="26" rx="4" fill="#fff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="696.5" y="471" text-anchor="middle" class="net" fill="#2563eb">TRACK_1</text>
+<rect x="655" y="483" width="83" height="26" rx="4" fill="#fff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="696.5" y="501" text-anchor="middle" class="net" fill="#2563eb">TRACK_2</text>
+<rect x="655" y="513" width="83" height="26" rx="4" fill="#fff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="696.5" y="531" text-anchor="middle" class="net" fill="#2563eb">TRACK_3</text>
+<rect x="655" y="543" width="83" height="26" rx="4" fill="#fff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="696.5" y="561" text-anchor="middle" class="net" fill="#2563eb">TRACK_4</text>
+<rect x="655" y="608" width="110" height="26" rx="4" fill="#fff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="710.0" y="626" text-anchor="middle" class="net" fill="#2563eb">BUZZER_PWM</text>
+<rect x="980" y="283" width="83" height="26" rx="4" fill="#fff" stroke="#16a34a" stroke-width="1.5"/>
+<text x="1021.5" y="301" text-anchor="middle" class="net" fill="#16a34a">I2C_SDA</text>
+<rect x="980" y="318" width="83" height="26" rx="4" fill="#fff" stroke="#16a34a" stroke-width="1.5"/>
+<text x="1021.5" y="336" text-anchor="middle" class="net" fill="#16a34a">I2C_SCL</text>
+<rect x="980" y="683" width="83" height="26" rx="4" fill="#fff" stroke="#db2777" stroke-width="1.5"/>
+<text x="1021.5" y="701" text-anchor="middle" class="net" fill="#db2777">CSI_CAM</text>
+<rect x="980" y="718" width="83" height="26" rx="4" fill="#fff" stroke="#db2777" stroke-width="1.5"/>
+<text x="1021.5" y="736" text-anchor="middle" class="net" fill="#db2777">USB_MIC</text>
+<rect x="980" y="748" width="101" height="26" rx="4" fill="#fff" stroke="#db2777" stroke-width="1.5"/>
+<text x="1030.5" y="766" text-anchor="middle" class="net" fill="#db2777">USB_SPK_L</text>
+<rect x="980" y="778" width="101" height="26" rx="4" fill="#fff" stroke="#db2777" stroke-width="1.5"/>
+<text x="1030.5" y="796" text-anchor="middle" class="net" fill="#db2777">USB_SPK_R</text>
+<rect x="450" y="181" width="74" height="26" rx="4" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+<text x="487.0" y="199" text-anchor="middle" class="net" fill="#111827">+5V</text>
+<rect x="450" y="209" width="74" height="26" rx="4" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+<text x="487.0" y="227" text-anchor="middle" class="net" fill="#111827">GND</text>
+<rect x="450" y="237" width="83" height="26" rx="4" fill="#fff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="491.5" y="255" text-anchor="middle" class="net" fill="#2563eb">US_TRIG</text>
+<rect x="450" y="265" width="83" height="26" rx="4" fill="#fff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="491.5" y="283" text-anchor="middle" class="net" fill="#2563eb">US_ECHO</text>
+<rect x="450" y="321" width="74" height="26" rx="4" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+<text x="487.0" y="339" text-anchor="middle" class="net" fill="#111827">+5V</text>
+<rect x="450" y="349" width="74" height="26" rx="4" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+<text x="487.0" y="367" text-anchor="middle" class="net" fill="#111827">GND</text>
+<rect x="450" y="377" width="101" height="26" rx="4" fill="#fff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="500.5" y="395" text-anchor="middle" class="net" fill="#2563eb">TRACK_1~4</text>
+<rect x="520" y="475" width="110" height="26" rx="4" fill="#fff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="575.0" y="493" text-anchor="middle" class="net" fill="#2563eb">BUZZER_PWM</text>
+<rect x="520" y="503" width="74" height="26" rx="4" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+<text x="557.0" y="521" text-anchor="middle" class="net" fill="#111827">+5V</text>
+<rect x="520" y="531" width="74" height="26" rx="4" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+<text x="557.0" y="549" text-anchor="middle" class="net" fill="#111827">GND</text>
+<rect x="450" y="631" width="83" height="26" rx="4" fill="#fff" stroke="#16a34a" stroke-width="1.5"/>
+<text x="491.5" y="649" text-anchor="middle" class="net" fill="#16a34a">I2C_SDA</text>
+<rect x="450" y="659" width="83" height="26" rx="4" fill="#fff" stroke="#16a34a" stroke-width="1.5"/>
+<text x="491.5" y="677" text-anchor="middle" class="net" fill="#16a34a">I2C_SCL</text>
+<rect x="450" y="687" width="110" height="26" rx="4" fill="#fff" stroke="#9333ea" stroke-width="1.5"/>
+<text x="505.0" y="705" text-anchor="middle" class="net" fill="#9333ea">AIN0_LIGHT</text>
+<rect x="450" y="715" width="101" height="26" rx="4" fill="#fff" stroke="#9333ea" stroke-width="1.5"/>
+<text x="500.5" y="733" text-anchor="middle" class="net" fill="#9333ea">AIN1_TEMP</text>
+<rect x="450" y="743" width="110" height="26" rx="4" fill="#fff" stroke="#9333ea" stroke-width="1.5"/>
+<text x="505.0" y="761" text-anchor="middle" class="net" fill="#9333ea">AIN2_SMOKE</text>
+<rect x="450" y="771" width="119" height="26" rx="4" fill="#fff" stroke="#9333ea" stroke-width="1.5"/>
+<text x="509.5" y="789" text-anchor="middle" class="net" fill="#9333ea">AIN3_VOLUME</text>
+<rect x="280" y="841" width="110" height="26" rx="4" fill="#fff" stroke="#9333ea" stroke-width="1.5"/>
+<text x="335.0" y="859" text-anchor="middle" class="net" fill="#9333ea">AIN0_LIGHT</text>
+<rect x="280" y="869" width="101" height="26" rx="4" fill="#fff" stroke="#9333ea" stroke-width="1.5"/>
+<text x="330.5" y="887" text-anchor="middle" class="net" fill="#9333ea">AIN1_TEMP</text>
+<rect x="525" y="841" width="110" height="26" rx="4" fill="#fff" stroke="#9333ea" stroke-width="1.5"/>
+<text x="580.0" y="859" text-anchor="middle" class="net" fill="#9333ea">AIN2_SMOKE</text>
+<rect x="525" y="869" width="119" height="26" rx="4" fill="#fff" stroke="#9333ea" stroke-width="1.5"/>
+<text x="584.5" y="887" text-anchor="middle" class="net" fill="#9333ea">AIN3_VOLUME</text>
+<rect x="1650" y="188" width="74" height="26" rx="4" fill="#fff" stroke="#16a34a" stroke-width="1.5"/>
+<text x="1687.0" y="206" text-anchor="middle" class="net" fill="#16a34a">0x16</text>
+<rect x="1650" y="328" width="74" height="26" rx="4" fill="#fff" stroke="#16a34a" stroke-width="1.5"/>
+<text x="1687.0" y="346" text-anchor="middle" class="net" fill="#16a34a">0x3C</text>
+<rect x="1650" y="448" width="74" height="26" rx="4" fill="#fff" stroke="#16a34a" stroke-width="1.5"/>
+<text x="1687.0" y="466" text-anchor="middle" class="net" fill="#16a34a">0x68</text>
+<rect x="1650" y="221" width="119" height="26" rx="4" fill="#fff" stroke="#16a34a" stroke-width="1.5"/>
+<text x="1709.5" y="239" text-anchor="middle" class="net" fill="#16a34a">I2C_SDA/SCL</text>
+<rect x="1650" y="361" width="119" height="26" rx="4" fill="#fff" stroke="#16a34a" stroke-width="1.5"/>
+<text x="1709.5" y="379" text-anchor="middle" class="net" fill="#16a34a">I2C_SDA/SCL</text>
+<rect x="1650" y="481" width="119" height="26" rx="4" fill="#fff" stroke="#16a34a" stroke-width="1.5"/>
+<text x="1709.5" y="499" text-anchor="middle" class="net" fill="#16a34a">I2C_SDA/SCL</text>
+<rect x="1515" y="731" width="83" height="26" rx="4" fill="#fff" stroke="#db2777" stroke-width="1.5"/>
+<text x="1556.5" y="749" text-anchor="middle" class="net" fill="#db2777">CSI_CAM</text>
+<rect x="1445" y="851" width="83" height="26" rx="4" fill="#fff" stroke="#db2777" stroke-width="1.5"/>
+<text x="1486.5" y="869" text-anchor="middle" class="net" fill="#db2777">USB_MIC</text>
+<rect x="1715" y="851" width="119" height="26" rx="4" fill="#fff" stroke="#db2777" stroke-width="1.5"/>
+<text x="1774.5" y="869" text-anchor="middle" class="net" fill="#db2777">USB_SPK_L/R</text>
+<path d="M615,380 L450,254" stroke="#2563eb" stroke-width="2.2" fill="none" marker-end="url(#arrow)"/>
+<path d="M615,415 L450,282" stroke="#2563eb" stroke-width="2.2" fill="none" marker-end="url(#arrow)"/>
+<path d="M615,500 L450,394" stroke="#2563eb" stroke-width="2.2" fill="none" marker-end="url(#arrow)"/>
+<path d="M615,625 L520,492" stroke="#2563eb" stroke-width="2.2" fill="none" marker-end="url(#arrow)"/>
+<path d="M1015,300 L1210,210" stroke="#16a34a" stroke-width="2.2" fill="none" marker-end="url(#arrow)"/>
+<path d="M1015,335 L1210,238" stroke="#16a34a" stroke-width="2.2" fill="none" marker-end="url(#arrow)"/>
+<path d="M1015,700 L1210,748" stroke="#db2777" stroke-width="2.2" fill="none" marker-end="url(#arrow)"/>
+<path d="M1015,735 L1210,868" stroke="#db2777" stroke-width="2.2" fill="none" marker-end="url(#arrow)"/>
+<path d="M1015,765 L1480,868" stroke="#db2777" stroke-width="2.2" fill="none" marker-end="url(#arrow)"/>
+<path d="M440,704 L280,858" stroke="#9333ea" stroke-width="2.2" fill="none" marker-end="url(#arrow)"/>
+<path d="M440,732 L280,886" stroke="#9333ea" stroke-width="2.2" fill="none" marker-end="url(#arrow)"/>
+<path d="M440,760 L525,858" stroke="#9333ea" stroke-width="2.2" fill="none" marker-end="url(#arrow)"/>
+<path d="M440,788 L525,886" stroke="#9333ea" stroke-width="2.2" fill="none" marker-end="url(#arrow)"/>
+<rect x="625" y="1010" width="1110" height="145" rx="8" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+<text x="645" y="1040" text-anchor="start" class="tableTitle" fill="#111">引脚/接口对照表</text>
+<text x="650" y="1070" text-anchor="start" class="foot" fill="#111">BOARD16 / BCM23 = US_TRIG    HC-SR04 TRIG 输出</text>
+<text x="650" y="1092" text-anchor="start" class="foot" fill="#111">BOARD18 / BCM24 = US_ECHO    HC-SR04 ECHO 输入</text>
+<text x="650" y="1114" text-anchor="start" class="foot" fill="#111">BOARD7/11/13/15 = TRACK_1~4    四路红外循迹输入</text>
+<text x="650" y="1136" text-anchor="start" class="foot" fill="#111">BOARD32 / BCM12 = BUZZER_PWM    蜂鸣器 PWM 控制</text>
+<text x="1185" y="1070" text-anchor="start" class="foot" fill="#111">BOARD3 / BCM2 = I2C_SDA    I2C 数据线</text>
+<text x="1185" y="1092" text-anchor="start" class="foot" fill="#111">BOARD5 / BCM3 = I2C_SCL    I2C 时钟线</text>
+<text x="1185" y="1114" text-anchor="start" class="foot" fill="#111">CSI 排线座 = CSI_CAM    摄像头专用接口</text>
+<text x="1185" y="1136" text-anchor="start" class="foot" fill="#111">USB 口 = USB_MIC / USB_SPK_L/R    麦克风与双扬声器</text>
+<text x="50" y="1130" text-anchor="start" class="foot" fill="#374151">说明：跨区域连接以同名网络标签为准；USB/CSI 为论文级接口模块，不展开高速物理引脚。</text>
+<text x="50" y="1155" text-anchor="start" class="foot" fill="#374151">代码依据：raspbot_remote/modules 与 driver/YB_Pcb_Car.py；生成：2026-05-17</text>
+</svg>
