@@ -85,15 +85,20 @@ class AppGateway:
             logger.info('app tracking_mode=%s', self._tracking_mode_store.is_enabled())
             if self._is_app_auto_status_payload(payload):
                 return
-        if not self._car_ready.is_set():
-            return
         payload = self._strip_command_auth(payload)
         payload = self._merge_command_cry(payload)
         async with self._car_send_lock:
+            if not self._car_ready.is_set():
+                return
             ws = self._car_ws
             if ws is None:
                 return
-            await ws.send(payload)
+            try:
+                await ws.send(payload)
+            except Exception as exc:
+                self._car_ready.clear()
+                self._car_ws = None
+                logger.warning('drop app command; car send failed: %s', exc)
 
     async def _cry_state_sync_loop(self, car_ws):
         if self._cry_state is None:

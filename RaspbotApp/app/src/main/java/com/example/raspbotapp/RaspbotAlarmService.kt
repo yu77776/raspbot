@@ -66,7 +66,7 @@ class RaspbotAlarmService : Service() {
             AlarmNotifier.FOREGROUND_NOTIFICATION_ID,
             AlarmNotifier.buildMonitorNotification(this, "后台监护启动中")
         )
-        connectionClient.reconnect(loadTarget(), dataOnly = true)
+        connectionClient.reconnect(dataOnly = true)
         return START_STICKY
     }
 
@@ -122,14 +122,6 @@ class RaspbotAlarmService : Service() {
         }
     }
 
-    private fun loadTarget(): String {
-        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_HOST, RaspbotProtocol.CLOUD_CONNECTION_LABEL)
-            .apply()
-        return RaspbotProtocol.CLOUD_CONNECTION_LABEL
-    }
-
     private fun updateForegroundStatus(text: String) {
         val notification = AlarmNotifier.buildMonitorNotification(this, text)
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
@@ -147,7 +139,5 @@ class RaspbotAlarmService : Service() {
 
     companion object {
         private const val TAG = "RaspbotAlarmService"
-        private const val PREFS_NAME = "raspbot_settings"
-        private const val KEY_HOST = "host"
     }
 }

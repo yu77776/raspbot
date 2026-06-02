@@ -19,8 +19,12 @@ logger = setup_logger('raspbot.audio')
 
 try:
     import pygame  # type: ignore[import-not-found]
-    pygame.mixer.init()
-    HAS_AUDIO = True
+    try:
+        pygame.mixer.init()
+        HAS_AUDIO = True
+    except Exception as exc:
+        HAS_AUDIO = False
+        logger.warning('pygame mixer init failed; audio playback disabled: %s', exc)
 except ImportError:
     HAS_AUDIO = False
     pygame = None

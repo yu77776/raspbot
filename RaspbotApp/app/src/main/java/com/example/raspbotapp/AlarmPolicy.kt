@@ -33,17 +33,17 @@ object AlarmPolicy {
         val token = raw.trim()
         if (token.isBlank()) return ""
         val lower = token.lowercase(Locale.US)
-        return when {
-            lower == "smoke" || lower.startsWith("smoke") -> "烟雾异常"
-            lower == "cry" || lower.startsWith("cry") -> "检测到哭声"
-            lower == "close_distance" || lower.contains("dist") || lower.contains("close") -> "距离过近"
-            lower.contains("track") || lower.contains("cliff") || lower.contains("suspend") -> "疑似悬空"
-            lower.contains("battery") || lower.contains("volt") -> "电池电量低"
-            lower == "temp_high" -> "室温偏高，请查看宝宝状态"
-            lower == "temp_low" -> "室温偏低，请查看宝宝状态"
-            lower == "light_low" -> "光照不足，识别稳定性可能下降"
-            lower == "light_high" -> "光照过强，画面可能过曝"
-            lower == "light_changed" -> "光照变化明显，小车已保守跟随"
+        return when (lower) {
+            "smoke", "smoke_alarm" -> "烟雾异常"
+            "cry", "crying", "baby_cry" -> "检测到哭声"
+            "close_distance", "distance_close", "too_close" -> "距离过近"
+            "cliff", "suspended", "suspend", "track_cliff" -> "疑似悬空"
+            "low_battery", "battery_low", "undervoltage", "low_voltage" -> "电池电量低"
+            "temp_high" -> "室温偏高，请查看宝宝状态"
+            "temp_low" -> "室温偏低，请查看宝宝状态"
+            "light_low" -> "光照不足，识别稳定性可能下降"
+            "light_high" -> "光照过强，画面可能过曝"
+            "light_changed" -> "光照变化明显，小车已保守跟随"
             else -> token
         }
     }
@@ -80,14 +80,15 @@ object AlarmPolicy {
                         || part.contains("室温偏高")
                         || part.contains("温度过低")
                         || part.contains("温度过高")
-                        || part.contains("temp_low")
-                        || part.contains("temp_high") -> keys.add("temperature")
-                    part.contains("检测到哭声") || part.contains("cry") -> keys.add("cry")
-                    part.contains("距离过近") || part.contains("close_distance") -> keys.add("distance")
-                    part.contains("烟雾") || part.contains("smoke") -> keys.add("smoke")
-                    part.contains("悬空") || part.contains("循迹") || part.contains("cliff") -> keys.add("cliff")
-                    part.contains("光照") || part.contains("light") -> keys.add("light")
-                    part.contains("电池") || part.contains("battery") || part.contains("volt") -> keys.add("battery")
+                        || part == "temp_low"
+                        || part == "temp_high" -> keys.add("temperature")
+                    part.contains("检测到哭声") || part in setOf("cry", "crying", "baby_cry") -> keys.add("cry")
+                    part.contains("距离过近") || part in setOf("close_distance", "distance_close", "too_close") -> keys.add("distance")
+                    part.contains("烟雾") || part in setOf("smoke", "smoke_alarm") -> keys.add("smoke")
+                    part.contains("悬空") || part.contains("循迹")
+                        || part in setOf("cliff", "suspended", "suspend", "track_cliff") -> keys.add("cliff")
+                    part.contains("光照") || part in setOf("light_low", "light_high", "light_changed") -> keys.add("light")
+                    part.contains("电池") || part in setOf("low_battery", "battery_low", "undervoltage", "low_voltage") -> keys.add("battery")
                     else -> keys.add("other:${part.lowercase(Locale.US)}")
                 }
             }

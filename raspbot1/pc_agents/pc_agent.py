@@ -34,7 +34,9 @@ class PcAgent:
 
     @property
     def is_healthy(self) -> bool:
-        """PC agent is healthy if ASR is either disabled or running without error."""
+        """PC agent is healthy only if the control client and optional ASR are OK."""
+        if not self.client.is_healthy:
+            return False
         if self.asr_runner is None:
             return True
         return self.asr_runner.is_running and self.asr_runner.error is None

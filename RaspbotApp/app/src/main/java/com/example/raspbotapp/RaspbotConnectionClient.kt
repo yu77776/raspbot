@@ -43,9 +43,9 @@ class RaspbotConnectionClient(
     @Volatile
     private var connected = false
 
-    fun connect(target: String, dataOnly: Boolean = false) {
+    fun connect(dataOnly: Boolean = false) {
         reconnectRunnable?.let { mainHandler.removeCallbacks(it) }
-        val url = buildConnectionUrl(target, dataOnly)
+        val url = buildConnectionUrl(dataOnly)
         callbacks.onConnecting()
         val request = Request.Builder().url(url).build()
         webSocket = wsClient.newWebSocket(request, object : WebSocketListener() {
@@ -74,7 +74,7 @@ class RaspbotConnectionClient(
                 connected = false
                 Log.d(TAG, "WebSocket closed code=$code reason=$reason")
                 callbacks.onClosed()
-                scheduleReconnect(target, dataOnly)
+                scheduleReconnect(dataOnly)
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: okhttp3.Response?) {
@@ -82,18 +82,18 @@ class RaspbotConnectionClient(
                 Log.w(TAG, "WebSocket failure url=$url message=${t.message}", t)
                 if (!callbacks.isApplyingHost()) {
                     callbacks.onFailure(t.message ?: "网络错误")
-                    scheduleReconnect(target, dataOnly)
+                    scheduleReconnect(dataOnly)
                 }
             }
         })
     }
 
-    fun reconnect(target: String, dataOnly: Boolean = false) {
+    fun reconnect(dataOnly: Boolean = false) {
         reconnectRunnable?.let { mainHandler.removeCallbacks(it) }
         connected = false
         webSocket?.close(1000, "Reconnecting")
         webSocket = null
-        connect(target, dataOnly)
+        connect(dataOnly)
     }
 
     fun sendSignaling(text: String): Boolean {
@@ -117,22 +117,16 @@ class RaspbotConnectionClient(
         wsClient.dispatcher.executorService.shutdown()
     }
 
-    private fun scheduleReconnect(target: String, dataOnly: Boolean) {
+    private fun scheduleReconnect(dataOnly: Boolean) {
         if (!callbacks.isAlive() || callbacks.isApplyingHost()) return
-        val r = Runnable { connect(target, dataOnly) }
+        val r = Runnable { connect(dataOnly) }
         reconnectRunnable = r
         mainHandler.postDelayed(r, reconnectMs)
     }
 }
 
-fun buildConnectionUrl(input: String, dataOnly: Boolean = false): String {
-    val value = input.trim()
-    val baseUrl = if (value.startsWith("ws://") || value.startsWith("wss://")) {
-        value
-    } else {
-        RaspbotProtocol.DEFAULT_SIGNALING_URL
-    }
-    return appendConnectionFlags(appendAuthToken(baseUrl), dataOnly)
+fun buildConnectionUrl(dataOnly: Boolean = false): String {
+    return appendConnectionFlags(appendAuthToken(RaspbotProtocol.DEFAULT_SIGNALING_URL), dataOnly)
 }
 
 private fun appendConnectionFlags(url: String, dataOnly: Boolean): String {

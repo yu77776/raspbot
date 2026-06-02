@@ -81,11 +81,17 @@ class PCClientWS:
         self._alarm_log_interval_sec = float(os.getenv('RASPBOT_ALARM_LOG_INTERVAL_SEC', '300.0'))
         self._last_tracking_gate_log_ts = 0.0
         self._last_tracking_enabled_state = None
+        self._run_started = False
+        self._model_ready = False
+        self._connected = False
+        self._last_error = None
 
 
     def on_asr_text(self, text: str):
         now = time.monotonic()
-        if now < self._asr_echo_suppress_until:
+        with self._voice_lock:
+            echo_suppress_until = self._asr_echo_suppress_until
+        if now < echo_suppress_until:
             logger.info("ignore ASR during TTS echo suppression: %s", text)
             return
         intent = parse_voice_intent(text, hold_sec=self._voice_hold_sec)
@@ -219,7 +225,17 @@ class PCClientWS:
         from ultralytics import YOLO
         logger.info('loading: %s (device=%s)', model_path, self.yolo_device)
         self.model = YOLO(model_path)
+        self._model_ready = True
         logger.info('ready')
+
+
+    @property
+    def is_healthy(self) -> bool:
+        if self._last_error is not None:
+            return False
+        if not self._run_started:
+            return True
+        return self._connected or not self._run_started
 
 
     def infer(self, frame) -> dict:
@@ -378,25 +394,29 @@ class PCClientWS:
             close_timeout=2,
         ) as ws:
             logger.info('connected')
+            self._connected = True
             self.baby_filter.reset()
             self.motion.reset()
-            self._latest_video_jpeg = None
-            self._latest_video_seq = 0
-            self._processed_video_seq = 0
-            self._video_event = asyncio.Event()
-            tasks = [
-                asyncio.create_task(self._recv_loop(ws)),
-                asyncio.create_task(self._process_latest_video_loop()),
-                asyncio.create_task(self._send_loop(ws)),
-            ]
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                exc = task.exception()
-                if exc is not None:
-                    raise exc
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+            try:
+                self._latest_video_jpeg = None
+                self._latest_video_seq = 0
+                self._processed_video_seq = 0
+                self._video_event = asyncio.Event()
+                tasks = [
+                    asyncio.create_task(self._recv_loop(ws)),
+                    asyncio.create_task(self._process_latest_video_loop()),
+                    asyncio.create_task(self._send_loop(ws)),
+                ]
+                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    exc = task.exception()
+                    if exc is not None:
+                        raise exc
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+            finally:
+                self._connected = False
 
 
     async def _recv_loop(self, ws: WebSocketClientProtocol):
@@ -523,24 +543,35 @@ class PCClientWS:
 
 
     async def run(self):
-        self.load_model()
-        attempt = 0
-        while cfg.MAX_RECONNECTS < 0 or attempt <= cfg.MAX_RECONNECTS:
-            try:
-                await self._session()
-            except KeyboardInterrupt:
-                logger.info('interrupted by user')
-                break
-            except (websockets.ConnectionClosed, websockets.InvalidURI, OSError) as e:
-                attempt += 1
-                remaining = (f"{cfg.MAX_RECONNECTS - attempt + 1} retries left"
-                             if cfg.MAX_RECONNECTS >= 0 else "unlimited retries")
-                logger.warning('disconnected: %s, retry in %ss (%s)', e, cfg.RECONNECT_DELAY, remaining)
-                await asyncio.sleep(cfg.RECONNECT_DELAY)
-            except Exception as e:
-                logger.error('unexpected error: %s', e)
-                attempt += 1
-                await asyncio.sleep(cfg.RECONNECT_DELAY)
-        flush_csv()
-        cv2.destroyAllWindows()
-        logger.info('client exited')
+        self._run_started = True
+        try:
+            self.load_model()
+            attempt = 0
+            while cfg.MAX_RECONNECTS < 0 or attempt <= cfg.MAX_RECONNECTS:
+                try:
+                    await self._session()
+                    self._last_error = None
+                except KeyboardInterrupt:
+                    logger.info('interrupted by user')
+                    break
+                except (websockets.ConnectionClosed, websockets.InvalidURI, OSError) as e:
+                    attempt += 1
+                    self._last_error = e if cfg.MAX_RECONNECTS >= 0 and attempt > cfg.MAX_RECONNECTS else None
+                    remaining = (f"{cfg.MAX_RECONNECTS - attempt + 1} retries left"
+                                 if cfg.MAX_RECONNECTS >= 0 else "unlimited retries")
+                    logger.warning('disconnected: %s, retry in %ss (%s)', e, cfg.RECONNECT_DELAY, remaining)
+                    await asyncio.sleep(cfg.RECONNECT_DELAY)
+                except Exception as e:
+                    logger.error('unexpected error: %s', e)
+                    attempt += 1
+                    self._last_error = e
+                    await asyncio.sleep(cfg.RECONNECT_DELAY)
+        except Exception as e:
+            self._last_error = e
+            raise
+        finally:
+            self._run_started = False
+            self._connected = False
+            flush_csv()
+            cv2.destroyAllWindows()
+            logger.info('client exited')

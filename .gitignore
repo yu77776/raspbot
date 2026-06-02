@@ -73,6 +73,14 @@ resume_embedded_zhaoguoyu.docx
 Raspbot项目完整审查报告.docx
 
 # Local thesis generation outputs
+generate_thesis.py
+build_revised_thesis.py
+verify_references.py
+tools/redraw_thesis_figures.py
+docs/schematic/
+docs/thesis_figures/
+outputs/
+*.docx
 *.before-format-check.docx
 *.before-nature-polish.docx
 *_latex无伪代码.docx

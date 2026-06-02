@@ -159,8 +159,8 @@ def _check_undervoltage() -> bool:
     """Check Pi PMIC undervoltage flag via vcgencmd get_throttled.
 
     Bit 0 (0x1) = undervoltage currently occurring.
-    Bit 16 (0x10000) = undervoltage has occurred since last check.
-    Result is cached for 30s since the flag is sticky.
+    Historical sticky bits (such as bit 16) are ignored for live alarm state.
+    Result is cached briefly to avoid shelling out on every env packet.
     """
     global _uv_cached_ts, _uv_cached_value
     now = time.monotonic()
@@ -176,7 +176,7 @@ def _check_undervoltage() -> bool:
         if hex_str.startswith("0x") or hex_str.startswith("0X"):
             hex_str = hex_str[2:]
         flags = int(hex_str, 16)
-        result = bool(flags & 0x10001)
+        result = bool(flags & 0x1)
     except Exception:
         result = False
     with _uv_lock:

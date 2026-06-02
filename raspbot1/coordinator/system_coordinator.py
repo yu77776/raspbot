@@ -211,7 +211,7 @@ class SystemCoordinator:
             prev = self._status["pc"]
             if prev == AgentStatus.RUNNING and not self.pc_agent.is_healthy:
                 self._status["pc"] = AgentStatus.DEGRADED
-                logger.warning("pc agent DEGRADED — ASR service may have failed")
+                logger.warning("pc agent DEGRADED — control client or ASR service may have failed")
 
         if self.app_agent is not None:
             prev = self._status["app"]

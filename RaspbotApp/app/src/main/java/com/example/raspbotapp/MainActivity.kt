@@ -48,7 +48,6 @@ import kotlin.math.abs
 class MainActivity : AppCompatActivity() {
     companion object {
         private const val PREFS_NAME = "raspbot_settings"
-        private const val KEY_HOST = "host"
         private const val KEY_VOICE_PROMPT = "voice_prompt"
         private const val KEY_TRACKING_MODE = "tracking_mode"
         private const val KEY_SPEAKER_VOLUME = "speaker_volume"
@@ -160,8 +159,6 @@ class MainActivity : AppCompatActivity() {
 
     private var commandTicker: Runnable? = null
     private var isActivityAlive = true
-    private var currentHost = RaspbotProtocol.CLOUD_CONNECTION_LABEL
-
     // Command state
     private var currentAction = "stop"
     private var servoAngle1 = 90
@@ -232,11 +229,7 @@ class MainActivity : AppCompatActivity() {
         loadAlertHistory()
         showPage(Page.HOME)
 
-        if (currentHost.isBlank()) {
-            updateConnectionStatus("请输入连接地址")
-        } else {
-            reconnectAll()
-        }
+        reconnectAll()
     }
 
     override fun onStart() {
@@ -454,11 +447,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadSavedSettings() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        currentHost = RaspbotProtocol.CLOUD_CONNECTION_LABEL
         voicePromptEnabled = prefs.getBoolean(KEY_VOICE_PROMPT, true)
         trackingMode = prefs.getBoolean(KEY_TRACKING_MODE, true)
         speakerVolume = prefs.getInt(KEY_SPEAKER_VOLUME, 80)
-        prefs.edit().putString(KEY_HOST, currentHost).apply()
     }
 
     private fun saveVoicePrompt(value: Boolean) {
@@ -1013,11 +1004,10 @@ class MainActivity : AppCompatActivity() {
         stopService(Intent(this, RaspbotAlarmService::class.java))
         speakerVolumeDirty = true
         speakerVolumeNeedsInitialCarSync = true
-        currentHost = RaspbotProtocol.CLOUD_CONNECTION_LABEL
         imgVideoFrame.visibility = View.VISIBLE
         rtcVideo.visibility = View.GONE
         webRtcClient.close()
-        connectionClient.reconnect(currentHost)
+        connectionClient.reconnect()
     }
 
     private fun reconnectVideoManually() {

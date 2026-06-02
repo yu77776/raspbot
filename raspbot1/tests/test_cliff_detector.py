@@ -1,5 +1,6 @@
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +16,7 @@ from protocol import (
     is_cliff_track,
 )
 from care_policy import CarePolicy, CarePolicyConfig, CliffDetector
+import env_sampler
 
 
 class TestCliffLevel(unittest.TestCase):
@@ -308,6 +310,20 @@ class TestEnvPacketCliffFields(unittest.TestCase):
         )
         self.assertEqual(packet.cliff_level, 3)
         self.assertIsInstance(packet.cliff_level, int)
+
+
+class TestUndervoltage(unittest.TestCase):
+    def setUp(self):
+        env_sampler._uv_cached_ts = 0.0
+        env_sampler._uv_cached_value = False
+
+    def test_current_undervoltage_bit_only(self):
+        with patch("env_sampler.subprocess.check_output", return_value="throttled=0x10000"):
+            self.assertFalse(env_sampler._check_undervoltage())
+
+        env_sampler._uv_cached_ts = 0.0
+        with patch("env_sampler.subprocess.check_output", return_value="throttled=0x1"):
+            self.assertTrue(env_sampler._check_undervoltage())
 
 
 if __name__ == "__main__":

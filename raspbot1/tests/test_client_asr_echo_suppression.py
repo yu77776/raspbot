@@ -42,6 +42,19 @@ class TestAsrEchoSuppression(unittest.TestCase):
         self.assertEqual(client.dialogue.calls, ["你好"])
         self.assertGreater(client._asr_echo_suppress_until, 0.0)
 
+    def test_client_health_tracks_model_connection_and_errors(self):
+        client = PCClientWS(uri="ws://example", model_path="best.pt")
+
+        self.assertTrue(client.is_healthy)
+        client._model_ready = True
+        self.assertTrue(client.is_healthy)
+        client._run_started = True
+        self.assertFalse(client.is_healthy)
+        client._connected = True
+        self.assertTrue(client.is_healthy)
+        client._last_error = RuntimeError("boom")
+        self.assertFalse(client.is_healthy)
+
 
 class TestTrackingModeGate(unittest.TestCase):
     def test_tracking_disabled_returns_stop_command(self):

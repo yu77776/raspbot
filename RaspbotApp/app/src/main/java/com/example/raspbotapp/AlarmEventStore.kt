@@ -34,13 +34,10 @@ object AlarmEventStore {
     private val storeLock = Any()
 
     fun load(context: Context): List<AlarmEvent> {
-        val json = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_ALERT_EVENTS, null)
-            ?: return emptyList()
-        val events = runCatching {
-            gson.fromJson<List<AlarmEvent>>(json, eventListType).orEmpty()
-        }.getOrElse { emptyList() }
-        return compactEvents(context, events)
+        synchronized(storeLock) {
+            val events = loadUnsafe(context)
+            return compactEventsLocked(context, events)
+        }
     }
 
     // Unsynchronized load — only call from within storeLock
@@ -131,11 +128,13 @@ object AlarmEventStore {
     }
 
     fun clear(context: Context) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .remove(KEY_ALERT_EVENTS)
-            .remove(KEY_LAST_ALARM_TIMES)
-            .apply()
+        synchronized(storeLock) {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .remove(KEY_ALERT_EVENTS)
+                .remove(KEY_LAST_ALARM_TIMES)
+                .apply()
+        }
     }
 
     private fun save(context: Context, events: List<AlarmEvent>) {
@@ -145,8 +144,8 @@ object AlarmEventStore {
             .apply()
     }
 
-    private fun compactEvents(context: Context, events: List<AlarmEvent>): List<AlarmEvent> {
-        val lastTimes = loadLastAlarmTimes(context).toMutableMap()
+    private fun compactEventsLocked(context: Context, events: List<AlarmEvent>): List<AlarmEvent> {
+        val lastTimes = mutableMapOf<String, Long>()
         val compacted = ArrayList<AlarmEvent>()
         for (event in events) {
             val keys = AlarmPolicy.alarmKeysFor(event.alarm)
@@ -160,7 +159,12 @@ object AlarmEventStore {
             lastTimes[primaryKey] = event.timeMs
             compacted.add(event)
         }
-        return compacted.takeLast(MAX_ALERT_HISTORY)
+        val bounded = compacted.takeLast(MAX_ALERT_HISTORY)
+        if (bounded.size != events.size) {
+            save(context, bounded)
+        }
+        saveLastAlarmTimes(context, lastTimes)
+        return bounded
     }
 
     private fun loadLastAlarmTimes(context: Context): Map<String, Long> {
