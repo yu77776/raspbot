@@ -22,7 +22,7 @@ from websockets.exceptions import ConnectionClosed
 
 from .local_env import load_baidu_asr_config
 from .logger_setup import setup_logger
-from .protocol import _safe_ws_path
+from .protocol import safe_ws_path
 
 logger = setup_logger("raspbot.asr")
 
@@ -488,7 +488,7 @@ class AsrServer:
     # ── client handler ───────────────────────────────────────────────────────
 
     async def handle_client(self, ws):
-        path = _safe_ws_path(ws)
+        path = safe_ws_path(ws)
         if self.cfg.path and path and path != self.cfg.path:
             await ws.close(1008, "invalid path")
             return

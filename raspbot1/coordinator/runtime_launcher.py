@@ -4,17 +4,15 @@ import argparse
 import os
 import subprocess
 import sys
-import threading
 import time
-from typing import List, Optional
+from typing import Optional
 
-from pc_agents.car_agent import CarAgent
 from pc_modules.auth_config import ensure_auth_token
-from pc_modules.car_resolver import save_cached_car
+from pc_modules.car_resolver import resolve_car
 from pc_modules.discovery import DEFAULT_DISCOVERY_PORT
 from pc_modules.logger_setup import setup_logger
 from pc_modules.process_utils import install_exit_handlers, start_process
-from pc_modules.protocol import append_auth_token_to_uri, resolve_auth_token
+from pc_modules.protocol import append_auth_token_to_uri
 from pc_modules.settings import DEFAULT_CAR_PORT
 
 logger = setup_logger("raspbot.agent")
@@ -142,33 +140,24 @@ def main():
         logger.error("未检测到热点/局域网 (192.168.137.x)。请先开启电脑热点。")
         raise SystemExit(1)
 
-    car_agent = CarAgent(args, auth_token)
+    from coordinator.system_coordinator import SystemCoordinator
+
+    coordinator = SystemCoordinator(args, auth_token)
     mon_proc: Optional[subprocess.Popen] = None
 
     def cleanup():
         if mon_proc is not None and mon_proc.poll() is None:
             mon_proc.terminate()
-        car_agent.stop()
+        coordinator.shutdown()
 
     install_exit_handlers(cleanup)
 
     try:
-        car = car_agent.start()
-        uri = f"ws://{car.ip}:{car.port}"
-
-        logger.info("waiting for %s", uri)
-        if not wait_websocket(uri, timeout=max(5.0, args.wait_port_timeout), auth_token=auth_token):
-            raise SystemExit(f"[AGENT] car websocket handshake not ready: {uri}")
-        logger.info("car websocket is ready: %s", uri)
-
-        try:
-            save_cached_car(car)
-            logger.info("cached car endpoint: %s", uri)
-        except Exception as exc:
-            logger.warning("failed to cache car endpoint: %s", exc)
-
         should_monitor = (args.monitor or args.no_pc) and not args.no_monitor
         if should_monitor:
+            # Monitor needs the car endpoint before the coordinator starts,
+            # so do a quick discovery-only pass.
+            car = resolve_car(args)
             mon_cmd = [sys.executable, "-m", "pc_modules.env_monitor",
                         "--host", car.ip, "--port", str(car.port)]
             if auth_token:
@@ -176,11 +165,9 @@ def main():
             mon_proc = start_process("MON", mon_cmd)
 
         if not args.no_pc:
-            from coordinator.system_coordinator import SystemCoordinator, RuntimeEndpoint
+            from coordinator.system_coordinator import RuntimeEndpoint
             _fill_pc_defaults(args)
-            endpoint = RuntimeEndpoint(host=car.ip, port=car.port, auth_token=auth_token)
-            coordinator = SystemCoordinator.from_args(args, endpoint=endpoint)
-            coordinator.run()  # blocking - YOLO + ASR + WebRTC
+            coordinator.run()  # blocking — full lifecycle
         elif not should_monitor:
             logger.info("no local services requested; leaving car server running")
             args.leave_car_running = True

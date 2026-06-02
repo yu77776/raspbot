@@ -102,6 +102,10 @@ class RaspbotWebRtcClient(
             PeerConnection.IceServer.builder("turn:47.108.164.190:3478")
                 .setUsername("webrtc_user")
                 .setPassword(BuildConfig.RASPBOT_TURN_CREDENTIAL)
+                .createIceServer(),
+            PeerConnection.IceServer.builder("turn:47.108.164.190:3478?transport=tcp")
+                .setUsername("webrtc_user")
+                .setPassword(BuildConfig.RASPBOT_TURN_CREDENTIAL)
                 .createIceServer()
         )
         val config = PeerConnection.RTCConfiguration(iceServers).apply {

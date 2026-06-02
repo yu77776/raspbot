@@ -7,7 +7,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from coordinator.system_coordinator import RuntimeEndpoint, SystemCoordinator, resolve_endpoint
+from coordinator.system_coordinator import (
+    AgentStatus,
+    RuntimeEndpoint,
+    SharedRuntimeState,
+    SystemCoordinator,
+    resolve_endpoint,
+)
+from pc_agents.pc_agent import PcAgent
+from pc_agents.app_agent import AppAgent
 
 
 def _args(**overrides):
@@ -55,21 +63,62 @@ def _args(**overrides):
 class TestSystemCoordinator(unittest.TestCase):
     def test_resolve_endpoint_uses_defaults_without_discovery(self):
         endpoint = resolve_endpoint(_args())
-
         self.assertEqual(endpoint.host, "10.188.152.100")
         self.assertEqual(endpoint.port, 5001)
         self.assertEqual(endpoint.auth_token, "token")
 
-    def test_coordinator_shares_tracking_state_between_agents(self):
-        endpoint = RuntimeEndpoint(host="127.0.0.1", port=5001, auth_token="token")
-        coordinator = SystemCoordinator(_args(), endpoint)
+    def test_coordinator_initial_status_all_idle(self):
+        coordinator = SystemCoordinator(_args(), "token")
+        self.assertEqual(
+            coordinator.status,
+            {"car": "IDLE", "pc": "IDLE", "app": "IDLE"},
+        )
 
+    def test_coordinator_all_healthy_when_idle(self):
+        coordinator = SystemCoordinator(_args(), "token")
+        self.assertTrue(coordinator.all_healthy)
+
+    def test_agents_share_tracking_state(self):
+        from pc_modules.app_gateway import TrackingModeStore
+        from pc_modules.voice_cry_bridge import CryStateStore
+
+        shared = SharedRuntimeState(
+            cry_state=CryStateStore(),
+            tracking_mode_store=TrackingModeStore(enabled=True),
+        )
+        endpoint = RuntimeEndpoint(host="127.0.0.1", port=5001, auth_token="token")
+        args = _args()
+
+        pc = PcAgent(args, endpoint, endpoint.auth_token, shared)
+        app = AppAgent(args, endpoint, endpoint.auth_token, shared, pc.client)
+
+        self.assertIs(pc.shared_state.tracking_mode_store, app.shared_state.tracking_mode_store)
+        self.assertIs(pc.client, app.client)
+        self.assertEqual(pc.client.uri, "ws://127.0.0.1:5001?token=token")
+
+    def test_coordinator_wires_agents_correctly(self):
+        endpoint = RuntimeEndpoint(host="10.0.0.1", port=5001, auth_token="tk")
+        coordinator = SystemCoordinator(_args(), "tk")
+        coordinator.run_with_endpoint(endpoint)
+        # After run_with_endpoint returns (pc_agent.run() exits immediately
+        # since the client isn't actually connected), agents should exist.
+        self.assertIsNotNone(coordinator.pc_agent)
+        self.assertIsNotNone(coordinator.app_agent)
+        self.assertIsNotNone(coordinator.shared_state)
+        # Agents share the tracking mode store
         self.assertIs(
             coordinator.pc_agent.shared_state.tracking_mode_store,
             coordinator.app_agent.shared_state.tracking_mode_store,
         )
-        self.assertIs(coordinator.pc_agent.client, coordinator.app_agent.client)
-        self.assertEqual(coordinator.pc_agent.client.uri, "ws://127.0.0.1:5001?token=token")
+
+    def test_agent_status_transitions(self):
+        coordinator = SystemCoordinator(_args(), "token")
+        self.assertEqual(coordinator.status["pc"], "IDLE")
+        # Simulate a phase transition
+        coordinator._phase("pc", AgentStatus.RUNNING)
+        self.assertEqual(coordinator.status["pc"], "RUNNING")
+        coordinator._phase("pc", AgentStatus.DEGRADED)
+        self.assertFalse(coordinator.all_healthy)
 
 
 if __name__ == "__main__":

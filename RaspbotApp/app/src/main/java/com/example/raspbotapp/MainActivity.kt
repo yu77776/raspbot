@@ -55,9 +55,6 @@ class MainActivity : AppCompatActivity() {
 
         private const val CMD_SEND_INTERVAL_MS = 100L
 
-        private const val NOTIFICATION_CHANNEL_ID = "raspbot_alarm"
-        private const val NOTIFICATION_CHANNEL_NAME = "Raspbot Alarms"
-
         private const val TREND_WINDOW_MS = 5 * 60 * 1000L
         private const val TREND_RENDER_POINTS = 72
         private const val TAG = "RaspbotApp"
@@ -227,7 +224,7 @@ class MainActivity : AppCompatActivity() {
         setupConnectionClients()
         ossImageLoader = OssImageLoader(signalSender = { json -> connectionClient.sendSignaling(json) })
         applySystemBars()
-        createNotificationChannel()
+        AlarmNotifier.createChannel(this)
         requestNotificationPermissionIfNeeded()
         loadSavedSettings()
         setupControls()
@@ -1227,7 +1224,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             // alarm
-            val alarm = AlarmPolicy.buildAlarmMessage(obj, dist, smoke, temp, lux, crying, cryScore)
+            val alarm = AlarmPolicy.buildAlarmMessage(obj)
             updateSafetyStatus(alarm, crying, cryScore)
             if (!alarm.isNullOrBlank()) {
                 recordAlarm(alarm, temp, dist, smoke, lux, crying, cryScore, batteryStatus)
@@ -1416,17 +1413,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     // Notifications --------------------------------------------------
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                NOTIFICATION_CHANNEL_ID, NOTIFICATION_CHANNEL_NAME,
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply { description = "Raspbot alarm notifications" }
-            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.createNotificationChannel(channel)
-        }
-    }
 
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

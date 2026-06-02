@@ -10,7 +10,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from pc_modules.client import PCClientWS
-from pc_modules.dialogue_engine import DialogueReply
 
 
 class FakeDialogue:
@@ -19,7 +18,7 @@ class FakeDialogue:
 
     def respond(self, text):
         self.calls.append(text)
-        return DialogueReply(text="你好呀！有什么我可以帮你的吗？")
+        return "你好呀！有什么我可以帮你的吗？"
 
 
 class TestAsrEchoSuppression(unittest.TestCase):

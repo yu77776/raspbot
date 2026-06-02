@@ -89,7 +89,7 @@ class RaspbotAlarmService : Service() {
             val crying = asBooleanOrNull(obj.get("crying"))
             val cryScore = asIntOrNull(obj.get("cry_score"))
             val batteryStatus = asStringOrNull(obj.get("battery_status"))
-            val alarm = AlarmPolicy.buildAlarmMessage(obj, dist, smoke, temp, lux, crying, cryScore)
+            val alarm = AlarmPolicy.buildAlarmMessage(obj)
             if (alarm.isNullOrBlank()) {
                 lastAlarmSignature = ""
                 lastAlarmAtMs = 0L

@@ -196,13 +196,16 @@ class TestOledStatus(unittest.TestCase):
 
         self.assertEqual(motor.motion[0], "backward")
 
-    def test_auto_tracking_without_detection_uses_sleeping_face(self):
+    def test_auto_tracking_without_detection_uses_searching_face(self):
         oled = FakeOled()
         executor = make_executor(oled=oled)
 
         executor.execute(CommandPacket(action="stop", tracking_mode=True, detecting=False))
 
-        self.assertIn("sleeping", oled.states)
+        # Tracking mode without detection stays "searching" — the OLED engine
+        # handles the 20s searching→sleeping auto-transition internally.
+        self.assertIn("searching", oled.states)
+        self.assertNotIn("sleeping", oled.states)
 
     def test_manual_too_close_clears_pending_close_backoff(self):
         motor = FakeMotor()

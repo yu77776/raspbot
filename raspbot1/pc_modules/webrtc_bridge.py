@@ -197,6 +197,15 @@ class WebRtcBridge:
                     credential=self.cfg.turn_credential,
                 )
             )
+            if "transport=" not in self.cfg.turn_url:
+                tcp_turn_url = f"{self.cfg.turn_url}?transport=tcp"
+                ice_servers.append(
+                    RTCIceServer(
+                        urls=tcp_turn_url,
+                        username=self.cfg.turn_username,
+                        credential=self.cfg.turn_credential,
+                    )
+                )
         pc = RTCPeerConnection(RTCConfiguration(iceServers=ice_servers))
         self._pc = pc
         pc.addTrack(LatestFrameVideoTrack(self._frame_provider))

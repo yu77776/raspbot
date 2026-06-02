@@ -4,7 +4,7 @@ import os
 
 from .logger_setup import setup_logger
 from .discovery import DEFAULT_DISCOVERY_PORT
-from coordinator.system_coordinator import SystemCoordinator
+from coordinator.system_coordinator import SystemCoordinator, resolve_endpoint
 
 logger = setup_logger('raspbot.pc')
 
@@ -72,7 +72,9 @@ def parse_args():
 def main():
     args = parse_args()
     args.enable_webrtc_bridge = not bool(args.disable_webrtc_bridge)
-    SystemCoordinator.from_args(args).run()
+    endpoint = resolve_endpoint(args)
+    coordinator = SystemCoordinator(args, endpoint.auth_token)
+    coordinator.run_with_endpoint(endpoint)
 
 
 if __name__ == '__main__':

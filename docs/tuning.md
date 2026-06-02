@@ -2,7 +2,7 @@
 
 PC motion parameters are hot-loaded from:
 
-`E:\毕设\raspbot1\motion_tuning.json`
+`E:\bishe\raspbot1\motion_tuning.json`
 
 The PC client checks this file while running. After editing and saving the file,
 changes are applied automatically without restarting the PC program or the car.

@@ -15,7 +15,9 @@ logger = setup_logger("raspbot.remote-car")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REMOTE_SOURCE_DIR = PROJECT_ROOT.parent / "raspbot_remote"
+SHARED_SOURCE_DIR = PROJECT_ROOT.parent / "raspbot_shared"
 REMOTE_DIR = "/home/pi/raspbot"
+REMOTE_SHARED_DIR = "/home/pi/raspbot/../raspbot_shared"
 REMOTE_LOG = "/tmp/raspbot-car-server.log"
 REMOTE_PID = "/tmp/raspbot-car-server.pid"
 REMOTE_HEARTBEAT = "/tmp/raspbot-agent-heartbeat"

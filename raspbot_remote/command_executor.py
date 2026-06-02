@@ -242,7 +242,9 @@ class CommandExecutor:
         if cmd.detecting:
             self.oled.set_state("tracking")
         elif cmd.tracking_mode:
-            self.oled.set_state("sleeping" if action == "stop" else "searching")
+            # Always "searching" — OLED engine auto-transitions to "sleeping"
+            # after SEARCH_TIMEOUT (20s) without any motion command.
+            self.oled.set_state("searching")
         else:
             self.oled.set_state("idle")
 

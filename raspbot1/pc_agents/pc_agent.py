@@ -32,6 +32,13 @@ class PcAgent:
             self.asr_runner.stop()
             logger.info("embedded server stopped")
 
+    @property
+    def is_healthy(self) -> bool:
+        """PC agent is healthy if ASR is either disabled or running without error."""
+        if self.asr_runner is None:
+            return True
+        return self.asr_runner.is_running and self.asr_runner.error is None
+
     def _tracking_enabled(self) -> bool:
         return self.shared_state.tracking_mode_store.is_enabled()
 

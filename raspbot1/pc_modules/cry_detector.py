@@ -131,7 +131,7 @@ class YamnetCryDetector:
         if model is None or not self._cry_indices:
             return 0.0
         try:
-            scores, _embeddings, _spectrogram = model(waveform.astype(np.float32))
+            scores, _embeddings, _spectrogram = model(waveform)
             scores_np = scores.numpy() if hasattr(scores, "numpy") else np.asarray(scores)
             mean_scores = np.mean(scores_np, axis=0)
             return float(np.max(mean_scores[self._cry_indices]))

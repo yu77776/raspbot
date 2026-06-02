@@ -1,9 +1,18 @@
-"""PC runtime system coordinator."""
+"""System coordinator — unified lifecycle, health monitoring, graceful shutdown.
 
+Orchestrates the full runtime: Car → PC → App, with dependency ordering
+and background health checks.  This is the single place that understands
+how the three agents depend on each other.
+"""
+
+import threading
+import time
 from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Optional
 
 from pc_agents.app_agent import AppAgent
+from pc_agents.car_agent import CarAgent
 from pc_agents.pc_agent import PcAgent
 from pc_modules.app_gateway import TrackingModeStore
 from pc_modules.logger_setup import setup_logger
@@ -35,40 +44,243 @@ class SharedRuntimeState:
     tracking_mode_store: TrackingModeStore
 
 
-class SystemCoordinator:
-    """Coordinates PC control and App-facing runtime agents."""
+class AgentStatus(Enum):
+    IDLE = auto()
+    STARTING = auto()
+    RUNNING = auto()
+    DEGRADED = auto()
+    STOPPING = auto()
+    STOPPED = auto()
+    FAILED = auto()
 
-    def __init__(self, args, endpoint: RuntimeEndpoint):
+
+class SystemCoordinator:
+    """Orchestrate the three runtime agents with proper lifecycle ordering.
+
+    Dependency chain:
+      CarAgent  →  discovers car, syncs code, starts remote server
+      PcAgent   →  needs car endpoint → YOLO + PID + ASR
+      AppAgent  →  needs PC client → WebRTC bridge
+
+    The coordinator enforces Car-ready before PC-start, and PC-ready
+    before App-start.  A background health monitor tracks each agent
+    and logs degradation.
+
+    Usage:
+      # Full lifecycle (car discovery + start):
+      coordinator = SystemCoordinator(args, auth_token)
+      coordinator.run()
+
+      # Car already running, just start PC+App:
+      coordinator = SystemCoordinator(args, auth_token)
+      coordinator.run_with_endpoint(endpoint)
+    """
+
+    HEALTH_CHECK_INTERVAL_SEC = 3.0
+    HEALTH_LOG_INTERVAL_SEC = 30.0
+
+    def __init__(self, args, auth_token: str):
         self.args = args
-        self.endpoint = endpoint
+        self.auth_token = auth_token
+
+        # Agents — created lazily as dependencies become ready
+        self.car_agent: Optional[CarAgent] = None
+        self.pc_agent: Optional[PcAgent] = None
+        self.app_agent: Optional[AppAgent] = None
+
+        # Shared state — created when PC agent is wired
+        self.shared_state: Optional[SharedRuntimeState] = None
+
+        # Health tracking
+        self._status: dict[str, AgentStatus] = {
+            "car": AgentStatus.IDLE,
+            "pc": AgentStatus.IDLE,
+            "app": AgentStatus.IDLE,
+        }
+        self._stop_event = threading.Event()
+        self._health_thread: Optional[threading.Thread] = None
+        self._last_health_log = 0.0
+
+    # ── Status API ────────────────────────────────────────────────
+
+    @property
+    def status(self) -> dict[str, str]:
+        return {k: v.name for k, v in self._status.items()}
+
+    @property
+    def all_healthy(self) -> bool:
+        return all(
+            s in (AgentStatus.RUNNING, AgentStatus.IDLE)
+            for s in self._status.values()
+        )
+
+    # ── Full lifecycle (car discovery + start) ────────────────────
+
+    def run(self):
+        """Full orchestration: discover car → start server → PC → App."""
+        self._phase("car", AgentStatus.STARTING)
+        self.car_agent = CarAgent(self.args, self.auth_token)
+
+        try:
+            car = self.car_agent.start()
+        except Exception:
+            self._phase("car", AgentStatus.FAILED)
+            raise
+
+        self._phase("car", AgentStatus.RUNNING)
+        endpoint = RuntimeEndpoint(host=car.ip, port=car.port, auth_token=self.auth_token)
+        logger.info("car ready at %s", endpoint.auth_uri)
+
+        # Cache the endpoint for future runs
+        try:
+            from pc_modules.car_resolver import save_cached_car
+            save_cached_car(car)
+            logger.info("cached car endpoint: %s", endpoint.uri)
+        except Exception as exc:
+            logger.warning("failed to cache car endpoint: %s", exc)
+
+        self._run_pc_app_chain(endpoint)
+
+    # ── PC+App chain (car already running) ────────────────────────
+
+    def run_with_endpoint(self, endpoint: RuntimeEndpoint):
+        """Start PC + App agents against an already-running car."""
+        self._phase("car", AgentStatus.RUNNING)  # assume car is up
+        self._run_pc_app_chain(endpoint)
+
+    def _run_pc_app_chain(self, endpoint: RuntimeEndpoint):
+        """Internal: wire PC → App and run the blocking control loop."""
+        # --- Shared state ---
         self.shared_state = SharedRuntimeState(
             cry_state=CryStateStore(),
             tracking_mode_store=TrackingModeStore(enabled=True),
         )
-        self.pc_agent = PcAgent(args, endpoint, endpoint.auth_token, self.shared_state)
-        self.app_agent = AppAgent(args, endpoint, endpoint.auth_token, self.shared_state, self.pc_agent.client)
 
-    @classmethod
-    def from_args(cls, args, *, endpoint: Optional[RuntimeEndpoint] = None):
-        if endpoint is None:
-            endpoint = resolve_endpoint(args)
-        return cls(args, endpoint)
-
-    def run(self) -> None:
+        # --- PC Agent ---
+        self._phase("pc", AgentStatus.STARTING)
+        self.pc_agent = PcAgent(self.args, endpoint, endpoint.auth_token, self.shared_state)
         self.pc_agent.start()
-        self.app_agent.start()
-        try:
-            self.pc_agent.run()
-        finally:
-            self.app_agent.stop()
-            self.pc_agent.stop()
+        self._phase("pc", AgentStatus.RUNNING)
+        logger.info("pc agent running — YOLO=%s ASR=%s",
+                     self.args.model,
+                     "disabled" if self.args.disable_asr else f"ws://{self.args.asr_host}:{self.args.asr_port}")
 
+        # --- App Agent ---
+        self._phase("app", AgentStatus.STARTING)
+        self.app_agent = AppAgent(
+            self.args, endpoint, endpoint.auth_token,
+            self.shared_state, self.pc_agent.client,
+        )
+        self.app_agent.start()
+        self._phase("app", AgentStatus.RUNNING)
+        logger.info("app agent running — WebRTC bridge %s",
+                     "disabled" if not self.args.enable_webrtc_bridge else self.args.webrtc_signaling_url)
+
+        # --- Health monitor ---
+        self._health_thread = threading.Thread(target=self._health_loop, daemon=True, name="coord-health")
+        self._health_thread.start()
+
+        # --- Block on PC control loop ---
+        try:
+            logger.info("all agents running — entering control loop")
+            self.pc_agent.run()  # blocking
+        except KeyboardInterrupt:
+            logger.info("keyboard interrupt — shutting down")
+        except Exception as exc:
+            logger.error("pc agent crashed: %s", exc)
+        finally:
+            self._stop_event.set()
+            self.shutdown()
+
+    # ── Health monitoring ─────────────────────────────────────────
+
+    def _health_loop(self):
+        """Background: check each agent periodically, log degradation."""
+        while not self._stop_event.wait(self.HEALTH_CHECK_INTERVAL_SEC):
+            self._check_health()
+            self._maybe_log_status()
+
+    def _check_health(self):
+        if self.car_agent is not None:
+            prev = self._status["car"]
+            if prev == AgentStatus.RUNNING and not self.car_agent.is_healthy:
+                self._status["car"] = AgentStatus.DEGRADED
+                logger.warning("car agent DEGRADED — heartbeat may be lost")
+
+        if self.pc_agent is not None:
+            prev = self._status["pc"]
+            if prev == AgentStatus.RUNNING and not self.pc_agent.is_healthy:
+                self._status["pc"] = AgentStatus.DEGRADED
+                logger.warning("pc agent DEGRADED — ASR service may have failed")
+
+        if self.app_agent is not None:
+            prev = self._status["app"]
+            if prev == AgentStatus.RUNNING and not self.app_agent.is_healthy:
+                self._status["app"] = AgentStatus.DEGRADED
+                logger.warning("app agent DEGRADED — WebRTC bridge may have failed")
+
+    def _maybe_log_status(self):
+        now = time.monotonic()
+        if now - self._last_health_log < self.HEALTH_LOG_INTERVAL_SEC:
+            return
+        self._last_health_log = now
+        status_line = " | ".join(f"{name}={status.name}" for name, status in self._status.items())
+        if self.all_healthy:
+            logger.info("health: %s", status_line)
+        else:
+            logger.warning("health: %s", status_line)
+
+    # ── Shutdown ──────────────────────────────────────────────────
+
+    def shutdown(self):
+        """Graceful stop: App → PC → Car (reverse dependency order)."""
+        logger.info("coordinator shutdown — stopping agents in reverse order")
+
+        # App first (depends on PC)
+        if self.app_agent is not None:
+            self._phase("app", AgentStatus.STOPPING)
+            try:
+                self.app_agent.stop()
+                self._phase("app", AgentStatus.STOPPED)
+            except Exception as exc:
+                self._phase("app", AgentStatus.FAILED)
+                logger.error("app agent stop error: %s", exc)
+
+        # PC next (depends on Car)
+        if self.pc_agent is not None:
+            self._phase("pc", AgentStatus.STOPPING)
+            try:
+                self.pc_agent.stop()
+                self._phase("pc", AgentStatus.STOPPED)
+            except Exception as exc:
+                self._phase("pc", AgentStatus.FAILED)
+                logger.error("pc agent stop error: %s", exc)
+
+        # Car last
+        if self.car_agent is not None:
+            self._phase("car", AgentStatus.STOPPING)
+            try:
+                self.car_agent.stop()
+                self._phase("car", AgentStatus.STOPPED)
+            except Exception as exc:
+                self._phase("car", AgentStatus.FAILED)
+                logger.error("car agent stop error: %s", exc)
+
+        logger.info("all agents stopped")
+
+    def _phase(self, agent: str, status: AgentStatus):
+        self._status[agent] = status
+
+
+# ── Standalone endpoint resolution (used by app.py when no coordinator) ──
 
 def resolve_endpoint(args) -> RuntimeEndpoint:
+    """Resolve car endpoint from args or UDP discovery.  Used when the
+    full coordinator lifecycle isn't needed (e.g. app.py standalone)."""
     host = (args.host or "").strip()
     port = int(args.port or 0)
 
-    if not host and not args.no_discover:
+    if not host and not getattr(args, "no_discover", False):
         from pc_modules.discovery import discover_car
 
         logger.info("listening udp://0.0.0.0:%s timeout=%.1fs", args.discover_port, args.discover_timeout)

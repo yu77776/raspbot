@@ -83,20 +83,12 @@ class PCClientWS:
         self._last_tracking_enabled_state = None
 
 
-    def _reset_tracking(self):
-        self.motion.reset()
-
-
-    def _asr_text_to_intent(self, text: str):
-        return parse_voice_intent(text, hold_sec=self._voice_hold_sec)
-
-
     def on_asr_text(self, text: str):
         now = time.monotonic()
         if now < self._asr_echo_suppress_until:
             logger.info("ignore ASR during TTS echo suppression: %s", text)
             return
-        intent = self._asr_text_to_intent(text)
+        intent = parse_voice_intent(text, hold_sec=self._voice_hold_sec)
         if not intent:
             reply = self.dialogue.respond(text)
             if reply is not None:
@@ -107,11 +99,11 @@ class PCClientWS:
                     self._voice_stop_audio = False
                     self._voice_audio_volume = None
                     self._voice_one_shot_pending = True
-                    self._voice_reply_text = reply.text
-                    self._voice_tts_text = reply.text
+                    self._voice_reply_text = reply
+                    self._voice_tts_text = reply
                     self._voice_intent_type = 'chat'
-                    self._asr_echo_suppress_until = self._tts_echo_suppress_deadline(reply.text)
-                logger.info("text=%s -> chat reply=%s", text, reply.text)
+                    self._asr_echo_suppress_until = self._tts_echo_suppress_deadline(reply)
+                logger.info("text=%s -> chat reply=%s", text, reply)
             return
         with self._voice_lock:
             self._voice_action = intent['action']
@@ -241,7 +233,7 @@ class PCClientWS:
 
     def make_command(self, detections: dict) -> CommandPacket:
         if not self._tracking_enabled():
-            self._reset_tracking()
+            self.motion.reset()
             self._last_track_locked = False
             self._last_track_conf = 0.0
             return self._tracking_disabled_stop_command()
@@ -387,7 +379,7 @@ class PCClientWS:
         ) as ws:
             logger.info('connected')
             self.baby_filter.reset()
-            self._reset_tracking()
+            self.motion.reset()
             self._latest_video_jpeg = None
             self._latest_video_seq = 0
             self._processed_video_seq = 0

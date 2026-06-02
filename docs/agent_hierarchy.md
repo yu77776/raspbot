@@ -55,7 +55,7 @@ Main System Agent
 
 负责范围：
 
-- 本地仓库：`E:\毕设\raspbot_remote`
+- 本地仓库：`E:\bishe\raspbot_remote`
 - 小车远程路径：`/home/pi/raspbot`
 - SSH：用户名和密码从本地私有配置或环境变量读取，不写入仓库
 
@@ -78,7 +78,7 @@ Main System Agent
 
 负责范围：
 
-- PC 端项目：`E:\毕设\raspbot1`
+- PC 端项目：`E:\bishe\raspbot1`
 - 默认 Python：`E:\conda\envs\myenv\python.exe`
 
 内部子代理：
@@ -100,23 +100,23 @@ Main System Agent
 
 ```powershell
 # 完整启动：小车端 + PC 客户端
-& E:/conda/envs/myenv/python.exe e:/毕设/raspbot1/raspbot_agent.py
+& E:/conda/envs/myenv/python.exe e:/bishe/raspbot1/raspbot_agent.py
 
 # 已知小车 IP 时启动
-& E:/conda/envs/myenv/python.exe e:/毕设/raspbot1/raspbot_agent.py --host 10.188.152.100
+& E:/conda/envs/myenv/python.exe e:/bishe/raspbot1/raspbot_agent.py --host 10.188.152.100
 
 # 只看环境/IMU 监控
 & E:/conda/envs/myenv/python.exe -m pc_modules.env_monitor --host 10.188.152.100
 
 # 调参时启动完整系统并额外显示监控
-& E:/conda/envs/myenv/python.exe e:/毕设/raspbot1/raspbot_agent.py --monitor
+& E:/conda/envs/myenv/python.exe e:/bishe/raspbot1/raspbot_agent.py --monitor
 ```
 
 ## App Agent
 
 负责范围：
 
-- Android 项目：`E:\AndroidStudioProjects\RaspbotApp`
+- Android 项目：`E:\bishe\RaspbotApp`
 
 内部子代理：
 

@@ -27,6 +27,13 @@ class AppAgent:
             self.webrtc_runner.stop()
             logger.info("bridge stopped")
 
+    @property
+    def is_healthy(self) -> bool:
+        """App agent is healthy if WebRTC bridge is either disabled or running without error."""
+        if self.webrtc_runner is None:
+            return True
+        return self.webrtc_runner.is_running and self.webrtc_runner.error is None
+
     def _start_webrtc_bridge(self) -> None:
         if not self.args.enable_webrtc_bridge:
             return

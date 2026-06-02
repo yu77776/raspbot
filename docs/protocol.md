@@ -1,6 +1,6 @@
 # Raspbot Wire Protocol
 
-This document is the shared contract for App, PC, and car messages. Keep code changes aligned with this file before adding new command or environment fields.
+This document is the shared contract for App, PC, and car messages. The canonical Python implementation lives in `raspbot_shared/protocol.py` — keep code changes aligned with both this document and that module.
 
 ## Binary Packet Prefixes
 

@@ -51,12 +51,19 @@ class GatewayConfig:
         return append_auth_token_to_uri(f"ws://{self.car_host}:{self.car_port}", self.auth_token)
 
 
-def _is_app_voice_obj(payload: dict) -> bool:
+def _try_decode_command(packet) -> Optional[dict]:
+    """Decode a MSG_COMMAND binary packet to a JSON dict, or return None."""
+    if not isinstance(packet, (bytes, bytearray)) or len(packet) < 2:
+        return None
+    if packet[0] != cfg.MSG_COMMAND:
+        return None
+    try:
+        payload = json.loads(bytes(packet[1:]).decode("utf-8"))
+    except Exception:
+        return None
     if not isinstance(payload, dict):
-        return False
-    msg_type = str(payload.get("type", "") or "").strip().lower()
-    action = str(payload.get("action", "") or "").strip().lower()
-    return msg_type == TYPE_APP_VOICE or action in {"voice", TYPE_APP_VOICE}
+        return None
+    return payload
 
 
 class AppGateway:
@@ -98,46 +105,34 @@ class AppGateway:
             await asyncio.sleep(0.5)
 
     def _strip_command_auth(self, command_packet):
-        if not isinstance(command_packet, (bytes, bytearray)) or len(command_packet) < 2:
-            return command_packet
-        if command_packet[0] != cfg.MSG_COMMAND:
-            return command_packet
-        try:
-            payload = json.loads(bytes(command_packet[1:]).decode("utf-8"))
-        except Exception:
-            return command_packet
-        if not isinstance(payload, dict):
+        payload = _try_decode_command(command_packet)
+        if payload is None:
             return command_packet
         return bytes([cfg.MSG_COMMAND]) + json.dumps(strip_auth_fields(payload), ensure_ascii=False).encode("utf-8")
 
     def _extract_tracking_mode(self, command_packet) -> Optional[bool]:
-        if not isinstance(command_packet, (bytes, bytearray)) or len(command_packet) < 2:
-            return None
-        if command_packet[0] != cfg.MSG_COMMAND:
-            return None
-        try:
-            payload = json.loads(bytes(command_packet[1:]).decode("utf-8"))
-        except Exception:
-            return None
-        if not isinstance(payload, dict) or "tracking_mode" not in payload:
+        payload = _try_decode_command(command_packet)
+        if payload is None or "tracking_mode" not in payload:
             return None
         return CommandPacket.from_dict(payload).tracking_mode
 
     def _is_app_auto_status_payload(self, command_packet) -> bool:
-        if not isinstance(command_packet, (bytes, bytearray)) or len(command_packet) < 2:
+        """True when this is a pure tracking-mode keepalive with no actionable content.
+
+        A payload is *not* a status-only keepalive when it carries audio_volume,
+        an explicit motion action, or other fields the car should act on.
+        """
+        payload = _try_decode_command(command_packet)
+        if payload is None:
             return False
-        if command_packet[0] != cfg.MSG_COMMAND:
+        if str(payload.get("source", "") or "").strip().lower() != "app_auto":
             return False
-        try:
-            payload = json.loads(bytes(command_packet[1:]).decode("utf-8"))
-        except Exception:
+        if not bool(CommandPacket.from_dict(payload).tracking_mode):
             return False
-        if not isinstance(payload, dict):
+        # Don't drop when there's something actionable for the car.
+        if "audio_volume" in payload:
             return False
-        return (
-            str(payload.get("source", "") or "").strip().lower() == "app_auto"
-            and bool(CommandPacket.from_dict(payload).tracking_mode)
-        )
+        return True
 
     def is_tracking_enabled(self) -> bool:
         return self._tracking_mode_store.is_enabled()
@@ -209,15 +204,8 @@ class AppGateway:
     def _merge_command_cry(self, command_packet):
         if self._cry_state is None:
             return command_packet
-        if not isinstance(command_packet, (bytes, bytearray)) or len(command_packet) < 2:
-            return command_packet
-        if command_packet[0] != cfg.MSG_COMMAND:
-            return command_packet
-        try:
-            payload = json.loads(bytes(command_packet[1:]).decode("utf-8"))
-        except Exception:
-            return command_packet
-        if not isinstance(payload, dict):
+        payload = _try_decode_command(command_packet)
+        if payload is None:
             return command_packet
         payload = strip_auth_fields(payload)
 

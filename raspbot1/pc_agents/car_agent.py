@@ -21,7 +21,9 @@ class CarAgent:
 
     def start(self):
         from pc_modules.car_resolver import resolve_car
-        from pc_modules.remote_car import REMOTE_DIR, REMOTE_SOURCE_DIR, RemoteCar
+        from pc_modules.remote_car import (
+            REMOTE_DIR, REMOTE_SHARED_DIR, REMOTE_SOURCE_DIR, SHARED_SOURCE_DIR, RemoteCar,
+        )
 
         self.car = resolve_car(self.args)
         if self.args.skip_car_start:
@@ -39,7 +41,10 @@ class CarAgent:
                 if not self.args.skip_car_sync:
                     uploaded = self.remote.sync_project(REMOTE_SOURCE_DIR)
                     logger.info("synced car code to %s (%s changed files)", REMOTE_DIR, uploaded)
-                    if uploaded > 0:
+                    shared_uploaded = self.remote.sync_project(SHARED_SOURCE_DIR, REMOTE_SHARED_DIR)
+                    if shared_uploaded > 0:
+                        logger.info("synced shared lib to %s (%s files)", REMOTE_SHARED_DIR, shared_uploaded)
+                    if uploaded > 0 or shared_uploaded > 0:
                         result = self.remote.restart_discovery()
                         if result.exit_status == 0:
                             logger.info("remote %s", result.stdout)
@@ -85,6 +90,11 @@ class CarAgent:
                 logger.error("remote stop error: %s", exc)
         if self.remote is not None:
             self.remote.close()
+
+    @property
+    def is_healthy(self) -> bool:
+        """Car is healthy if SSH connected and remote server was started successfully."""
+        return self.remote is not None and self.started_remote
 
     def _heartbeat_loop(self, heartbeat_timeout: float) -> None:
         interval = max(1.0, min(5.0, float(heartbeat_timeout) / 3.0))

@@ -1,13 +1,14 @@
-﻿"""Command and environment packet models."""
+"""Command and environment packet models (PC-specific view).
+
+Imports shared utilities from raspbot_shared.protocol instead of
+duplicating them.  PC's CommandPacket has different stop-safety defaults
+(speed=0 instead of car's 80) and adds PC-only to_wire_dict() / clone().
+"""
+
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
-
-def _clamp_int(value: Any, min_v: int, max_v: int, default: int) -> int:
-    try:
-        return int(max(min_v, min(max_v, int(value))))
-    except Exception:
-        return int(default)
+from raspbot_shared.protocol import as_bool, clamp_int
 
 
 def _clamp_float(value: Any, min_v: float, max_v: float, default: float) -> float:
@@ -17,18 +18,13 @@ def _clamp_float(value: Any, min_v: float, max_v: float, default: float) -> floa
         return float(default)
 
 
-def _as_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    if isinstance(value, str):
-        return value.strip().lower() in {'1', 'true', 'yes', 'on'}
-    return False
-
-
 @dataclass
 class CommandPacket:
+    """PC-side command packet with stop-safety defaults (speed=0).
+
+    Use to_wire_dict() for serialization, clone() for immutable updates.
+    """
+
     action: str = 'stop'
     servo_angle: float = 90.0
     servo_angle2: float = 90.0
@@ -52,7 +48,7 @@ class CommandPacket:
     def from_dict(cls, payload: Dict[str, Any]):
         if not isinstance(payload, dict):
             return cls()
-        speed = _clamp_int(payload.get('speed', 0), 0, 255, 0)
+        speed = clamp_int(payload.get('speed', 0), 0, 255, 0)
         audio_volume = payload.get('audio_volume')
         crying_payload = payload.get('remote_crying', payload.get('crying', None))
         cry_score_payload = payload.get('remote_cry_score', payload.get('cry_score', None))
@@ -62,16 +58,16 @@ class CommandPacket:
             servo_angle=_clamp_float(payload.get('servo_angle', 90.0), 0.0, 180.0, 90.0),
             servo_angle2=_clamp_float(payload.get('servo_angle2', 90.0), 0.0, 180.0, 90.0),
             speed=speed,
-            left_speed=_clamp_int(payload.get('left_speed', speed), 0, 255, speed),
-            right_speed=_clamp_int(payload.get('right_speed', speed), 0, 255, speed),
+            left_speed=clamp_int(payload.get('left_speed', speed), 0, 255, speed),
+            right_speed=clamp_int(payload.get('right_speed', speed), 0, 255, speed),
             source=str(payload.get('source', '') or '').strip(),
-            tracking_mode=_as_bool(payload.get('tracking_mode', False)),
-            audio_volume=None if audio_volume is None else _clamp_int(audio_volume, 0, 100, 100),
-            detecting=_as_bool(payload.get('detecting', False)),
+            tracking_mode=as_bool(payload.get('tracking_mode', False)),
+            audio_volume=None if audio_volume is None else clamp_int(audio_volume, 0, 100, 100),
+            detecting=as_bool(payload.get('detecting', False)),
             play_song=str(payload.get('play_song', '') or '').strip(),
-            stop_audio=_as_bool(payload.get('stop_audio', False)),
-            remote_crying=None if crying_payload is None else _as_bool(crying_payload),
-            remote_cry_score=None if cry_score_payload is None else _clamp_int(cry_score_payload, 0, 100, 0),
+            stop_audio=as_bool(payload.get('stop_audio', False)),
+            remote_crying=None if crying_payload is None else as_bool(crying_payload),
+            remote_cry_score=None if cry_score_payload is None else clamp_int(cry_score_payload, 0, 100, 0),
             remote_alarm=None if alarm_payload is None else str(alarm_payload).strip(),
             reply_text=str(payload.get("reply_text", "") or "").strip(),
             tts_text=str(payload.get("tts_text", "") or "").strip(),
@@ -79,8 +75,7 @@ class CommandPacket:
         )
 
     def to_wire_dict(self) -> Dict[str, Any]:
-        # Keep network protocol aligned with car-side CommandPacket.from_dict().
-        # Debug/analysis fields stay local and are not sent over websocket.
+        """Serialize for car WebSocket — only non-empty fields."""
         payload = {
             'action': self.action,
             'servo_angle': self.servo_angle,
@@ -118,6 +113,8 @@ class CommandPacket:
 
 @dataclass
 class EnvPacket:
+    """PC-side env packet — simplified view with raw dict for pass-through."""
+
     dist_cm: float = 999.0
     track: List[int] = field(default_factory=list)
     alarm: str = ''

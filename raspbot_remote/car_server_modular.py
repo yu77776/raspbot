@@ -564,12 +564,18 @@ def resolve_asr_url(cli_url):
 
 
 def _is_app_auto_status_payload(payload) -> bool:
+    """True when this is a pure tracking-mode keepalive with no actionable content."""
     if not isinstance(payload, dict):
         return False
     source = str(payload.get('source', '') or '').strip().lower()
     if source != 'app_auto':
         return False
-    return as_bool(payload.get('tracking_mode', False))
+    if not as_bool(payload.get('tracking_mode', False)):
+        return False
+    # Don't treat payloads with actionable fields as mere status keepalives.
+    if "audio_volume" in payload:
+        return False
+    return True
 
 
 async def main(host, port, asr_url, mic_health_timeout, auth_token):
