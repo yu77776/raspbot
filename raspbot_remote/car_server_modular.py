@@ -85,6 +85,8 @@ class CarServer:
         self.manual_override_sec = float(os.getenv('RASPBOT_MANUAL_OVERRIDE_SEC', '1.2'))
         self.command_timeout_sec = float(os.getenv('RASPBOT_COMMAND_TIMEOUT_SEC', '0.8'))
         self.home_servos_on_safe_stop = as_bool(os.getenv('RASPBOT_HOME_SERVOS_ON_SAFE_STOP', '0'))
+        self._safe_stop_lock = threading.Lock()
+        self._safe_stop_in_progress = False
         self._command_lock = threading.Lock()
         self._last_command_time = 0.0
         self._last_motion_command_active = False
@@ -145,11 +147,20 @@ class CarServer:
         )
 
     def _safe_stop_motion(self, reason: str, *, home_servos: Optional[bool] = None) -> None:
-        self.motor.stop()
-        should_home = self.home_servos_on_safe_stop if home_servos is None else bool(home_servos)
-        if should_home:
-            self.motor.center_servos(90, 90, force=True)
-        logger.info('safe stop motion reason=%s home_servos=%s', reason, should_home)
+        with self._safe_stop_lock:
+            if self._safe_stop_in_progress:
+                logger.debug('safe stop already running; skip reason=%s', reason)
+                return
+            self._safe_stop_in_progress = True
+        try:
+            self.motor.stop()
+            should_home = self.home_servos_on_safe_stop if home_servos is None else bool(home_servos)
+            if should_home:
+                self.motor.center_servos(90, 90, force=True)
+            logger.info('safe stop motion reason=%s home_servos=%s', reason, should_home)
+        finally:
+            with self._safe_stop_lock:
+                self._safe_stop_in_progress = False
 
     def _set_remote_cry_state(self, cmd: CommandPacket):
         if cmd.remote_crying is None and cmd.remote_cry_score is None and cmd.remote_alarm is None:

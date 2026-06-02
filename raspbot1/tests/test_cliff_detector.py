@@ -171,6 +171,12 @@ class TestCliffDetector(unittest.TestCase):
         self.assertEqual(self.detector.level, 3)
         self.assertEqual(self.detector.direction, "suspended")
 
+    def test_unhealthy_imu_forces_suspended_direction(self):
+        for _ in range(2):
+            self.detector.update([0, 0, 0, 0], imu_packet=_imu(healthy=False, pitch=-30.0, roll=30.0))
+        self.assertEqual(self.detector.level, 3)
+        self.assertEqual(self.detector.direction, "suspended")
+
     def test_direction_empty_when_safe(self):
         self.detector.update([1, 1, 1, 1])
         self.assertEqual(self.detector.direction, "")
