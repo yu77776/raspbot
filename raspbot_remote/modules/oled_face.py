@@ -257,7 +257,7 @@ class FaceEngine:
             return
         text = "A" if label == "AUTO" else "M"
         draw.rectangle([0, 0, 12, 8], outline=1)
-        draw.text((4, -2), text, font=self.font_en, fill=1)
+        draw.text((4, 0), text, font=self.font_en, fill=1)
 
     # Event queue
     def _pop_event(self):
@@ -348,7 +348,7 @@ class FaceEngine:
         vol = max(0, min(100, vol))
 
         # Compact layout for 128x32: title + bar + pct, vertically stacked.
-        self._draw_text_center(draw, -2, "VOL", self.font_en)
+        self._draw_text_center(draw, 0, "VOL", self.font_en)
 
         bar_x, bar_y, bar_w, bar_h = 14, 9, 100, 7
         draw.rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h], outline=1)
@@ -442,10 +442,10 @@ class FaceEngine:
         show = int(tick / 0.3) % 2 == 0
         msg = self._fit_text(draw, self._sanitize_alarm_text(alarm_msg), font=self.font_en)
         if show:
-            self._draw_text_center(draw, -2, f"! {msg}", self.font_en)
+            self._draw_text_center(draw, 0, f"! {msg}", self.font_en)
         else:
             draw.rectangle([0, 0, 127, 8], fill=1)
-            self._draw_text_center_inv(draw, -2, f"! {msg}", self.font_en)
+            self._draw_text_center_inv(draw, 0, f"! {msg}", self.font_en)
 
         # Bottom: slim volume bar, no percentage to keep alarm readable
         vol = int(ev.value or 0)

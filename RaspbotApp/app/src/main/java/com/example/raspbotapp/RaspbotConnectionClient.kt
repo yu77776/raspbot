@@ -42,9 +42,12 @@ class RaspbotConnectionClient(
     private var reconnectRunnable: Runnable? = null
     @Volatile
     private var connected = false
+    @Volatile
+    private var allowReconnect = true
 
     fun connect(dataOnly: Boolean = false) {
         reconnectRunnable?.let { mainHandler.removeCallbacks(it) }
+        allowReconnect = true
         val url = buildConnectionUrl(dataOnly)
         callbacks.onConnecting()
         val request = Request.Builder().url(url).build()
@@ -90,6 +93,7 @@ class RaspbotConnectionClient(
 
     fun reconnect(dataOnly: Boolean = false) {
         reconnectRunnable?.let { mainHandler.removeCallbacks(it) }
+        allowReconnect = true
         connected = false
         webSocket?.close(1000, "Reconnecting")
         webSocket = null
@@ -105,6 +109,7 @@ class RaspbotConnectionClient(
     fun close(reason: String = "Closed") {
         reconnectRunnable?.let { mainHandler.removeCallbacks(it) }
         reconnectRunnable = null
+        allowReconnect = false
         connected = false
         webSocket?.close(1000, reason)
         webSocket = null
@@ -118,7 +123,7 @@ class RaspbotConnectionClient(
     }
 
     private fun scheduleReconnect(dataOnly: Boolean) {
-        if (!callbacks.isAlive() || callbacks.isApplyingHost()) return
+        if (!allowReconnect || !callbacks.isAlive() || callbacks.isApplyingHost()) return
         val r = Runnable { connect(dataOnly) }
         reconnectRunnable = r
         mainHandler.postDelayed(r, reconnectMs)

@@ -92,6 +92,20 @@ class FakeOled:
         self.events.append(("clear_event", kind, None))
 
 
+class FakeDraw:
+    def __init__(self):
+        self.text_calls = []
+
+    def text(self, xy, text, font=None, fill=1):
+        self.text_calls.append((xy, text, font, fill))
+
+    def rectangle(self, *_args, **_kwargs):
+        pass
+
+    def textlength(self, text, font=None):
+        return len(str(text)) * 6
+
+
 class TestOledStatus(unittest.TestCase):
     def test_alarm_text_is_short_for_small_oled(self):
         cases = [
@@ -252,6 +266,17 @@ class TestOledStatus(unittest.TestCase):
         face.push_event("volume", 72, duration=1.5)
 
         self.assertTrue(face._event_overlays_alarm(face._pop_event()))
+
+    def test_compact_oled_text_does_not_use_negative_y(self):
+        face = FaceEngine()
+        draw = FakeDraw()
+
+        face._draw_mode_badge(draw)
+        face._draw_text_center(draw, 0, "VOL", face.font_en)
+        face._draw_text_center_inv(draw, 0, "! ALERT", face.font_en)
+
+        self.assertTrue(draw.text_calls)
+        self.assertTrue(all(y >= 0 for (x, y), *_ in draw.text_calls))
 
 
 def make_executor(oled, motor=None, env_provider=None, mark_command_seen=None):

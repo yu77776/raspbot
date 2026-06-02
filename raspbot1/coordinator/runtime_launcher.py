@@ -4,7 +4,6 @@ import argparse
 import os
 import subprocess
 import sys
-import time
 from typing import Optional
 
 from pc_modules.auth_config import ensure_auth_token
@@ -12,34 +11,9 @@ from pc_modules.car_resolver import resolve_car
 from pc_modules.discovery import DEFAULT_DISCOVERY_PORT
 from pc_modules.logger_setup import setup_logger
 from pc_modules.process_utils import install_exit_handlers, start_process
-from pc_modules.protocol import append_auth_token_to_uri
 from pc_modules.settings import DEFAULT_CAR_PORT
 
 logger = setup_logger("raspbot.agent")
-
-
-def wait_websocket(uri: str, timeout: float = 45.0, auth_token: str = "") -> bool:
-    import asyncio
-    import websockets
-
-    probe_uri = append_auth_token_to_uri(uri, auth_token)
-
-    async def _probe():
-        async with websockets.connect(
-            probe_uri, max_size=1024 * 1024,
-            open_timeout=2, ping_timeout=2, close_timeout=1, proxy=None,
-        ):
-            return True
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            asyncio.run(_probe())
-            return True
-        except Exception:
-            time.sleep(0.8)
-    return False
-
 
 def parse_args():
     p = argparse.ArgumentParser(description="Start car server + PC runtime")

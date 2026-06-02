@@ -36,10 +36,14 @@ class Buzzer(ModuleBase):
         self.started = False
         self.enabled = False
         self._pwm = None
+        self._pattern_lock = threading.Lock()
+        self._pattern_thread = None
+        self._pattern_cancel = threading.Event()
 
         if HAS_GPIO:
             try:
                 GPIO.setmode(GPIO.BOARD)
+                GPIO.setwarnings(False)
                 GPIO.setup(self.pin, GPIO.OUT)
                 self._pwm = GPIO.PWM(self.pin, self.pwm_freq)
                 self._pwm.start(0)
@@ -68,11 +72,17 @@ class Buzzer(ModuleBase):
         times = max(0, int(times))
         if times == 0:
             return
-        threading.Thread(
-            target=self._beep_pattern_sync,
-            args=(times, on_sec, off_sec),
-            daemon=True,
-        ).start()
+        with self._pattern_lock:
+            self._pattern_cancel.set()
+            if self._pattern_thread and self._pattern_thread.is_alive():
+                self._pattern_thread.join(timeout=0.05)
+            self._pattern_cancel = threading.Event()
+            self._pattern_thread = threading.Thread(
+                target=self._beep_pattern_sync,
+                args=(times, on_sec, off_sec, self._pattern_cancel),
+                daemon=True,
+            )
+            self._pattern_thread.start()
 
     def _can_start(self):
         return bool(self.enabled)
@@ -82,6 +92,9 @@ class Buzzer(ModuleBase):
             time.sleep(0.5)
 
     def _after_stop(self):
+        self._pattern_cancel.set()
+        if self._pattern_thread and self._pattern_thread.is_alive():
+            self._pattern_thread.join(timeout=0.2)
         self._silence()
         if self._pwm is not None:
             try:
@@ -95,13 +108,13 @@ class Buzzer(ModuleBase):
             except Exception:
                 pass
 
-    def _beep_pattern_sync(self, times, on_sec, off_sec):
+    def _beep_pattern_sync(self, times, on_sec, off_sec, cancel_event):
         for i in range(times):
-            if self.stop_event.is_set():
+            if self.stop_event.is_set() or cancel_event.is_set():
                 break
             self.beep(on_sec)
-            if i < times - 1 and not self.stop_event.is_set():
-                time.sleep(max(0.0, float(off_sec)))
+            if i < times - 1 and not self.stop_event.is_set() and not cancel_event.is_set():
+                cancel_event.wait(max(0.0, float(off_sec)))
 
     def _silence(self):
         if not self.enabled or self._pwm is None:

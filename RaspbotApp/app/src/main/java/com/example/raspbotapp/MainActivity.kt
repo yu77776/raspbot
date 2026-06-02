@@ -159,6 +159,7 @@ class MainActivity : AppCompatActivity() {
 
     private var commandTicker: Runnable? = null
     private var isActivityAlive = true
+    private var reconnectOnNextStart = false
     // Command state
     private var currentAction = "stop"
     private var servoAngle1 = 90
@@ -235,12 +236,18 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         stopService(Intent(this, RaspbotAlarmService::class.java))
+        if (reconnectOnNextStart) {
+            reconnectOnNextStart = false
+            connectionClient.reconnect()
+        }
         loadAlertHistory()
     }
 
     override fun onStop() {
         super.onStop()
         sendAction("stop")
+        connectionClient.close("Activity background")
+        reconnectOnNextStart = true
         startBackgroundAlarmService()
     }
 
