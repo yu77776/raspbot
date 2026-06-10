@@ -28,7 +28,7 @@ def _args(**overrides):
         auth_token="token",
         model="best.pt",
         yolo_device="cpu",
-        yolo_use_cudnn=False,
+        yolo_disable_cudnn=False,
         tuning="",
         disable_asr=True,
         asr_host="127.0.0.1",

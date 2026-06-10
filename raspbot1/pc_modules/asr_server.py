@@ -9,12 +9,14 @@ import asyncio
 import json
 import os
 import queue
+import subprocess
 import threading
 import time
 import uuid
 from dataclasses import dataclass
 from typing import Callable, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 import websockets
@@ -28,6 +30,26 @@ logger = setup_logger("raspbot.asr")
 
 SAMPLE_RATE = 16000
 _AUDIO_EOF = object()
+
+
+def _drain_stale_audio(audio_queue: asyncio.Queue) -> int:
+    dropped = 0
+    saw_eof = False
+    while True:
+        try:
+            item = audio_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        if item is _AUDIO_EOF:
+            saw_eof = True
+        else:
+            dropped += 1
+    if saw_eof:
+        try:
+            audio_queue.put_nowait(_AUDIO_EOF)
+        except asyncio.QueueFull:
+            pass
+    return dropped
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -75,19 +97,63 @@ def _fetch_access_token(api_key: str, secret_key: str, cached_token: str = "") -
         "grant_type": "client_credentials",
         "client_id": api_key,
         "client_secret": secret_key,
-    })
+    }).encode("utf-8")
     req = Request(
-        f"https://aip.baidubce.com/oauth/2.0/token?{params}",
-        data=b"",
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        "https://aip.baidubce.com/oauth/2.0/token",
+        data=params,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
         method="POST",
     )
-    with urlopen(req, timeout=10) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except URLError as exc:
+        body = _fetch_access_token_with_curl(params, exc)
     token = str(body.get("access_token", "")).strip()
     if not token:
         raise RuntimeError(f"Baidu token response missing access_token: {body}")
     return token
+
+
+def _fetch_access_token_with_curl(params: bytes, original_exc: Exception) -> dict:
+    cmd = [
+        "curl.exe",
+        "-sS",
+        "--connect-timeout",
+        "12",
+        "--max-time",
+        "20",
+        "-H",
+        "Accept: application/json",
+        "-H",
+        "Content-Type: application/x-www-form-urlencoded",
+        "-X",
+        "POST",
+        "--data",
+        params.decode("utf-8"),
+        "https://aip.baidubce.com/oauth/2.0/token",
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+    except Exception as curl_exc:
+        raise RuntimeError(
+            f"Baidu token request failed via urllib ({type(original_exc).__name__}) "
+            f"and curl fallback ({type(curl_exc).__name__})"
+        ) from original_exc
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Baidu token request failed via urllib ({type(original_exc).__name__}) "
+            f"and curl fallback rc={result.returncode}: {result.stderr.strip()[:200]}"
+        ) from original_exc
+    try:
+        return json.loads(result.stdout)
+    except Exception as json_exc:
+        raise RuntimeError(
+            f"Baidu token curl fallback returned non-json response: {result.stdout[:200]}"
+        ) from json_exc
 
 
 def _build_baidu_url(base_url: str, token: str) -> str:
@@ -384,7 +450,14 @@ class AsrServer:
         buf = bytearray()
         idle_timeout = float(os.getenv("BAIDU_AUDIO_IDLE_TIMEOUT", "2.0"))
 
-        async with websockets.connect(baidu_url, open_timeout=8, close_timeout=1) as baidu_ws:
+        # proxy=None disables websockets' automatic system-proxy detection.
+        # On Windows a local proxy (e.g. Clash on 127.0.0.1:7897) is picked up
+        # from the registry and tunnels the wss connection, which resets the TLS
+        # handshake to the domestic Baidu endpoint (ConnectionResetError during
+        # start_tls). Baidu is a direct-connect host, so bypass the proxy.
+        async with websockets.connect(
+            baidu_url, open_timeout=8, close_timeout=1, proxy=None
+        ) as baidu_ws:
             await baidu_ws.send(await self._build_start_frame())
             last_audio_ts = time.monotonic()
 
@@ -498,14 +571,57 @@ class AsrServer:
         queue_max = int(os.getenv("ASR_AUDIO_QUEUE_MAX", "96"))
         audio_queue: asyncio.Queue = asyncio.Queue(maxsize=max(8, queue_max))
         recv_task = asyncio.create_task(self._queue_client_audio(ws, audio_queue))
+        baidu_retry_delay = 0.5
+        baidu_retry_count = 0
+        last_baidu_error_log = 0.0
         try:
             while True:
-                if not await self._run_baidu_session_from_queue(audio_queue):
+                try:
+                    keep_running = await self._run_baidu_session_from_queue(audio_queue)
+                except (ConnectionClosed, OSError, TimeoutError, asyncio.TimeoutError) as exc:
+                    baidu_retry_count += 1
+                    dropped = _drain_stale_audio(audio_queue)
+                    now = time.monotonic()
+                    if baidu_retry_count == 1 or now - last_baidu_error_log >= 5.0:
+                        last_baidu_error_log = now
+                        logger.warning(
+                            "baidu session transient error: %r; retry in %.1fs dropped_stale_audio=%s count=%s",
+                            exc,
+                            baidu_retry_delay,
+                            dropped,
+                            baidu_retry_count,
+                        )
+                    if recv_task.done() and audio_queue.empty():
+                        break
+                    await asyncio.sleep(baidu_retry_delay)
+                    baidu_retry_delay = min(5.0, baidu_retry_delay * 2.0)
+                    continue
+                except Exception as exc:
+                    baidu_retry_count += 1
+                    dropped = _drain_stale_audio(audio_queue)
+                    now = time.monotonic()
+                    if baidu_retry_count == 1 or now - last_baidu_error_log >= 5.0:
+                        last_baidu_error_log = now
+                        logger.warning(
+                            "baidu session error: %r; retry in %.1fs dropped_stale_audio=%s count=%s",
+                            exc,
+                            baidu_retry_delay,
+                            dropped,
+                            baidu_retry_count,
+                        )
+                    if recv_task.done() and audio_queue.empty():
+                        break
+                    await asyncio.sleep(baidu_retry_delay)
+                    baidu_retry_delay = min(5.0, baidu_retry_delay * 2.0)
+                    continue
+                baidu_retry_delay = 0.5
+                baidu_retry_count = 0
+                if not keep_running:
                     break
                 if recv_task.done() and audio_queue.empty():
                     break
         except Exception as exc:
-            logger.warning("client error: %s", exc)
+            logger.warning("client error: %r", exc)
         finally:
             recv_task.cancel()
             await asyncio.gather(recv_task, return_exceptions=True)
@@ -521,18 +637,25 @@ class AsrServer:
         )
         self._start_cry_worker()
         warmup_wait = float(os.getenv("ASR_CRY_WARMUP_WAIT_SEC", "30.0"))
-        if self.cfg.on_cry_state is not None and warmup_wait > 0:
-            if self._wait_cry_ready(warmup_wait):
-                logger.info("cry detector ready")
-            else:
-                logger.warning("cry detector warmup not ready after %.1fs; continuing", warmup_wait)
         try:
+            # Open the listening socket BEFORE waiting on cry-detector warmup so
+            # clients (e.g. the car mic streamer) can connect immediately instead
+            # of hitting connection-refused while YAMNet loads.
             async with websockets.serve(
                 self.handle_client,
                 self.cfg.host,
                 self.cfg.port,
                 max_size=2 * 1024 * 1024,
             ):
+                logger.info("serving ws://%s:%s%s", self.cfg.host, self.cfg.port, self.cfg.path)
+                if self.cfg.on_cry_state is not None and warmup_wait > 0:
+                    # _wait_cry_ready blocks on a threading.Event; run it off the
+                    # event loop so the accept handler keeps serving connections.
+                    ready = await asyncio.to_thread(self._wait_cry_ready, warmup_wait)
+                    if ready:
+                        logger.info("cry detector ready")
+                    else:
+                        logger.warning("cry detector warmup not ready after %.1fs; continuing", warmup_wait)
                 if stop_event is None:
                     await asyncio.Future()
                 else:

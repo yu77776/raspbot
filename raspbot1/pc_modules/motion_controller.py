@@ -220,6 +220,18 @@ class MotionController:
         elif self.state == MotionState.SCAN:
             out = self._do_scan(dt)
         else:
+            # IDLE: smoothly return servos to center
+            target_x = 90.0
+            target_y = self.cfg.servo_y_hold if not self.cfg.enable_servo_y else 90.0
+            return_step = self.cfg.scan_speed_deg_s * dt
+            if abs(self.servo_x - target_x) <= return_step:
+                self.servo_x = target_x
+            else:
+                self.servo_x += return_step if self.servo_x < target_x else -return_step
+            if abs(self.servo_y - target_y) <= return_step:
+                self.servo_y = target_y
+            else:
+                self.servo_y += return_step if self.servo_y < target_y else -return_step
             out = MotionOutput(servo_x=self.servo_x, servo_y=self.servo_y)
 
         self._log_debug(out, imu_yaw)

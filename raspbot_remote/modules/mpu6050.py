@@ -428,12 +428,24 @@ class MPU6050(ModuleBase):
                 )
                 roll, pitch, yaw = self._quat_to_euler_deg()
 
+                # 世界坐标系 yaw rate: 将传感器系 gyro 通过当前姿态四元数旋转到世界系
+                qw, qx, qy, qz = self.q
+                gx_rad = math.radians(gx_dps)
+                gy_rad = math.radians(gy_dps)
+                gz_rad = math.radians(gz_dps)
+                # R * [gx, gy, gz]，取 z 分量 = yaw rate (deg/s)
+                wz = (2.0 * (qx * qz - qy * qw) * gx_rad +
+                      2.0 * (qy * qz + qx * qw) * gy_rad +
+                      (1.0 - 2.0 * (qx * qx + qy * qy)) * gz_rad)
+                yaw_rate_dps = math.degrees(wz)
+
                 with self.lock:
                     self.last_ok_ts = time.time()
                     self.data = {
                         'roll': round(roll, 2),
                         'pitch': round(pitch, 2),
                         'yaw': round(yaw, 2),
+                        'yaw_rate': round(yaw_rate_dps, 4),
                         'quat': [round(v, 6) for v in self.q],
                         'gyro_dps': [round(gx_dps, 4), round(gy_dps, 4), round(gz_dps, 4)],
                         'accel_g': [round(ax, 5), round(ay, 5), round(az, 5)],

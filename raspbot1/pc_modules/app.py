@@ -24,9 +24,9 @@ def parse_args():
     )
     p.add_argument('--yolo-device', default='cuda', help='YOLO device: cpu / cuda / 0')
     p.add_argument(
-        '--yolo-use-cudnn',
+        '--yolo-disable-cudnn',
         action='store_true',
-        help='Enable cuDNN for YOLO GPU inference (disabled by default for compatibility)',
+        help='Disable cuDNN for YOLO GPU inference (enabled by default)',
     )
 
     # Embedded ASR server (enabled by default).

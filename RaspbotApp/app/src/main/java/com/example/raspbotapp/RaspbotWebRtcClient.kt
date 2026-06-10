@@ -27,6 +27,7 @@ import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
+import java.util.UUID
 
 class RaspbotWebRtcClient(
     private val context: Context,
@@ -55,6 +56,9 @@ class RaspbotWebRtcClient(
     private var commandDataChannel: DataChannel? = null
     private var ready = false
     private var videoInitialized = false
+    @Volatile private var remoteAnswerApplied = false
+    @Volatile private var iceConnected = false
+    @Volatile private var currentSessionId = ""
 
     fun setup() {
         try {
@@ -95,6 +99,9 @@ class RaspbotWebRtcClient(
         val factory = peerConnectionFactory ?: return
         if (!ready) return
         closePeerConnection()
+        remoteAnswerApplied = false
+        iceConnected = false
+        currentSessionId = UUID.randomUUID().toString()
         callbacks.onStatus("WebRTC建链中")
 
         val iceServers = listOf(
@@ -116,6 +123,7 @@ class RaspbotWebRtcClient(
                 if (!callbacks.isSignalingConnected()) return
                 val iceJson = JsonObject().apply {
                     addProperty("type", RaspbotProtocol.TYPE_WEBRTC_ICE)
+                    addProperty("sessionId", currentSessionId)
                     addAuthToken(this)
                     val candidateObj = JsonObject().apply {
                         addProperty("candidate", candidate.sdp)
@@ -137,6 +145,8 @@ class RaspbotWebRtcClient(
 
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
                 Log.d(TAG, "ICE state=$state")
+                iceConnected = state == PeerConnection.IceConnectionState.CONNECTED ||
+                    state == PeerConnection.IceConnectionState.COMPLETED
                 callbacks.onStatus(
                     when (state) {
                         PeerConnection.IceConnectionState.CONNECTED,
@@ -186,6 +196,7 @@ class RaspbotWebRtcClient(
                     override fun onSetSuccess() {
                         val offerJson = JsonObject().apply {
                             addProperty("type", RaspbotProtocol.TYPE_WEBRTC_OFFER)
+                            addProperty("sessionId", currentSessionId)
                             addAuthToken(this)
                             addProperty("sdp", desc.description)
                             addProperty("sdpType", desc.type.canonicalForm())
@@ -217,6 +228,10 @@ class RaspbotWebRtcClient(
 
     fun handleAnswer(obj: JsonObject) {
         val pc = peerConnection ?: return
+        if (!matchesCurrentSession(obj)) {
+            Log.d(TAG, "ignore stale remote answer session=${asStringOrNull(obj.get("sessionId")) ?: "-"} current=$currentSessionId")
+            return
+        }
         val signalingState = pc.signalingState()
         if (signalingState != PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
             Log.d(TAG, "ignore remote answer in signaling state=$signalingState")
@@ -227,6 +242,7 @@ class RaspbotWebRtcClient(
         val answer = SessionDescription(SessionDescription.Type.ANSWER, sdp)
         pc.setRemoteDescription(object : SdpObserver {
             override fun onSetSuccess() {
+                remoteAnswerApplied = true
                 Log.d(TAG, "WebRTC remote answer applied")
             }
 
@@ -241,6 +257,10 @@ class RaspbotWebRtcClient(
     }
 
     fun handleIce(obj: JsonObject) {
+        if (!matchesCurrentSession(obj)) {
+            Log.d(TAG, "ignore stale remote ice session=${asStringOrNull(obj.get("sessionId")) ?: "-"} current=$currentSessionId")
+            return
+        }
         val candidateObj = if (obj.get("candidate")?.isJsonObject == true) {
             obj.getAsJsonObject("candidate")
         } else {
@@ -260,6 +280,12 @@ class RaspbotWebRtcClient(
     fun isCommandChannelOpen(): Boolean {
         return commandDataChannel?.state() == DataChannel.State.OPEN
     }
+
+    fun isRemoteAnswerApplied(): Boolean = remoteAnswerApplied
+
+    fun isIceConnected(): Boolean = iceConnected
+
+    fun getCurrentSessionId(): String = currentSessionId
 
     fun sendCommandJson(json: String): Boolean {
         val channel = commandDataChannel ?: return false
@@ -323,7 +349,15 @@ class RaspbotWebRtcClient(
         peerConnection?.close()
         peerConnection?.dispose()
         peerConnection = null
+        remoteAnswerApplied = false
+        iceConnected = false
+        currentSessionId = ""
         videoView.visibility = View.GONE
+    }
+
+    private fun matchesCurrentSession(obj: JsonObject): Boolean {
+        val messageSessionId = asStringOrNull(obj.get("sessionId"))
+        return currentSessionId.isNotBlank() && messageSessionId == currentSessionId
     }
 
 }

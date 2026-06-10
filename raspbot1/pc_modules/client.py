@@ -22,7 +22,7 @@ logger = setup_logger('raspbot.client')
 class PCClientWS:
 
     def __init__(self, uri: str, model_path: str, yolo_device: str = 'cuda',
-                 yolo_disable_cudnn: bool = True, tuning_path: str = None,
+                 yolo_disable_cudnn: bool = False, tuning_path: str = None,
                  tracking_enabled_provider=None):
         self.uri        = uri
         self.model_path = model_path
@@ -54,7 +54,7 @@ class PCClientWS:
         self._last_track_conf = 0.0
         self._last_track_locked = False
         self.baby_filter = BabyFilter(FilterConfig(
-            conf_threshold = 0.50,
+            conf_threshold = 0.70,
             confirm_frames = 3,
             lost_frames    = 5,
         ))

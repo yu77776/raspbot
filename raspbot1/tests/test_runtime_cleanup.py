@@ -1,5 +1,6 @@
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -36,6 +37,22 @@ class BlockingMotor:
 
     def center_servos(self, *_args, **_kwargs):
         self.center_calls += 1
+
+
+class FakeMicStream:
+    connect_timeout = 5.0
+    max_backoff = 8.0
+
+    def __init__(self, last_capture_ok_ts):
+        self.last_capture_ok_ts = last_capture_ok_ts
+        self.seen_timeouts = []
+
+    def capture_is_healthy(self, timeout_s):
+        self.seen_timeouts.append(timeout_s)
+        return (time.time() - self.last_capture_ok_ts) <= timeout_s
+
+    def get_last_capture_ok_ts(self):
+        return self.last_capture_ok_ts
 
 
 class TestRuntimeCleanup(unittest.TestCase):
@@ -83,6 +100,27 @@ class TestRuntimeCleanup(unittest.TestCase):
         self.assertEqual(server.motor.stop_calls, 1)
         self.assertEqual(server.motor.center_calls, 1)
         self.assertFalse(server._safe_stop_in_progress)
+
+    def test_mic_watchdog_allows_asr_reconnect_backoff_after_capture(self):
+        server = CarServer.__new__(CarServer)
+        server.mic_stream = FakeMicStream(time.time() - 7.0)
+        server.mic_health_timeout = 5.0
+        server.mic_startup_grace_sec = 0.0
+        server.mic_fail_safe_active = False
+        server.stop_event = threading.Event()
+        server._safe_stop_calls = 0
+
+        def fake_safe_stop(_reason):
+            server._safe_stop_calls += 1
+
+        server._safe_stop_motion = fake_safe_stop
+        server._start_mic_watchdog()
+        time.sleep(0.35)
+        server.stop_event.set()
+        server.mic_watchdog_thread.join(timeout=1.0)
+
+        self.assertGreaterEqual(server.mic_stream.seen_timeouts[-1], 14.0)
+        self.assertEqual(server._safe_stop_calls, 0)
 
 
 if __name__ == "__main__":

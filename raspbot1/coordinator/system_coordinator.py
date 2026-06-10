@@ -201,23 +201,27 @@ class SystemCoordinator:
             self._maybe_log_status()
 
     def _check_health(self):
-        if self.car_agent is not None:
-            prev = self._status["car"]
-            if prev == AgentStatus.RUNNING and not self.car_agent.is_healthy:
-                self._status["car"] = AgentStatus.DEGRADED
-                logger.warning("car agent DEGRADED — heartbeat may be lost")
+        self._check_agent_health("car", self.car_agent, "heartbeat may be lost")
+        self._check_agent_health("pc", self.pc_agent, "control client or ASR service may have failed")
+        self._check_agent_health("app", self.app_agent, "WebRTC bridge may have failed")
 
-        if self.pc_agent is not None:
-            prev = self._status["pc"]
-            if prev == AgentStatus.RUNNING and not self.pc_agent.is_healthy:
-                self._status["pc"] = AgentStatus.DEGRADED
-                logger.warning("pc agent DEGRADED — control client or ASR service may have failed")
+    def _check_agent_health(self, name, agent, degrade_hint):
+        """Transition RUNNING <-> DEGRADED based on current health.
 
-        if self.app_agent is not None:
-            prev = self._status["app"]
-            if prev == AgentStatus.RUNNING and not self.app_agent.is_healthy:
-                self._status["app"] = AgentStatus.DEGRADED
-                logger.warning("app agent DEGRADED — WebRTC bridge may have failed")
+        Recovery is allowed so transient startup/warmup blips (e.g. ASR model
+        load, control-client reconnect) do not lock the agent into DEGRADED
+        forever once the underlying issue clears.
+        """
+        if agent is None:
+            return
+        prev = self._status[name]
+        healthy = agent.is_healthy
+        if prev == AgentStatus.RUNNING and not healthy:
+            self._status[name] = AgentStatus.DEGRADED
+            logger.warning("%s agent DEGRADED — %s", name, degrade_hint)
+        elif prev == AgentStatus.DEGRADED and healthy:
+            self._status[name] = AgentStatus.RUNNING
+            logger.info("%s agent recovered — back to RUNNING", name)
 
     def _maybe_log_status(self):
         now = time.monotonic()

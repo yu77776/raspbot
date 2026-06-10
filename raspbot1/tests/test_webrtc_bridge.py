@@ -33,6 +33,82 @@ class FakeChannel:
         self.sent.append(text)
 
 
+class FakeWs:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, text):
+        self.sent.append(json.loads(text))
+
+
+class TestWebRtcBridgeSessionRouting(unittest.TestCase):
+    def test_answer_echoes_offer_session_id(self):
+        async def run():
+            bridge = object.__new__(WebRtcBridge)
+            bridge._pending_ice = []
+            bridge._pc = None
+
+            class FakeDescription:
+                sdp = "answer-sdp"
+                type = "answer"
+
+            class FakePc:
+                localDescription = FakeDescription()
+                remoteDescription = None
+
+                async def setRemoteDescription(self, desc):
+                    self.remoteDescription = desc
+
+                async def createAnswer(self):
+                    return FakeDescription()
+
+                async def setLocalDescription(self, desc):
+                    self.localDescription = desc
+
+            async def fake_create_peer(ws, session_id=""):
+                bridge._pc = FakePc()
+
+            bridge._create_peer = fake_create_peer
+            ws = FakeWs()
+            await bridge._accept_offer(
+                ws,
+                {
+                    "type": "webrtc_offer",
+                    "sdp": "offer-sdp",
+                    "sessionId": "offer-123",
+                },
+            )
+            return ws.sent
+
+        sent = asyncio.run(run())
+        self.assertEqual(sent[0]["type"], "webrtc_answer")
+        self.assertEqual(sent[0]["sessionId"], "offer-123")
+
+    def test_ice_with_stale_session_id_is_ignored(self):
+        async def run():
+            bridge = object.__new__(WebRtcBridge)
+            bridge._current_session_id = "current"
+            bridge._pending_ice = []
+
+            class FakePc:
+                remoteDescription = object()
+
+                def __init__(self):
+                    self.added = []
+
+                async def addIceCandidate(self, candidate):
+                    self.added.append(candidate)
+
+            pc = FakePc()
+            bridge._pc = pc
+            await bridge._add_ice({"sessionId": "old", "candidate": "candidate:0 1 UDP 1 0.0.0.0 9 typ host"})
+            return pc.added, bridge._pending_ice
+
+        added, pending = asyncio.run(run())
+        self.assertEqual(added, [])
+        self.assertEqual(pending, [])
+
+
 class TestWebRtcBridgeDisconnectHandling(unittest.TestCase):
     def test_suppresses_known_aiortc_disconnect_noise(self):
         self.assertTrue(

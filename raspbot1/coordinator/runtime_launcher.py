@@ -46,7 +46,7 @@ def parse_args():
     # -- PC overrides (usually from env) --
     p.add_argument("--model", default=os.getenv("RASPBOT_MODEL", "best.pt"))
     p.add_argument("--yolo-device", default=os.getenv("RASPBOT_YOLO_DEVICE", "cuda"))
-    p.add_argument("--yolo-use-cudnn", action="store_true")
+    p.add_argument("--yolo-disable-cudnn", action="store_true")
     p.add_argument("--disable-asr", action="store_true")
     p.add_argument("--disable-webrtc-bridge", action="store_true",
                    default=os.getenv("RASPBOT_ENABLE_WEBRTC_BRIDGE", "1").strip().lower() in {"0", "false", "no", "off"})

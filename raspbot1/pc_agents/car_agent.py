@@ -51,7 +51,7 @@ class CarAgent:
                         else:
                             logger.warning("discovery restart failed: %s", result.stderr or result.stdout)
                 result = self.remote.start_server(
-                    disable_mic_stream=self.args.disable_mic_stream,
+                    disable_mic_stream=self.args.disable_mic_stream or self.args.disable_asr,
                     heartbeat_timeout=heartbeat_timeout,
                     auth_token=self.auth_token,
                 )

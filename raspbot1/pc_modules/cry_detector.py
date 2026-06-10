@@ -4,8 +4,16 @@ from __future__ import annotations
 
 import csv
 import os
+import warnings
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Sequence, Tuple
+
+# Suppress tensorflow_hub / TF internal noise before the lazy import fires.
+if 'TF_CPP_MIN_LOG_LEVEL' not in os.environ:
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'              # hide INFO + WARNING
+if 'TF_ENABLE_ONEDNN_OPTS' not in os.environ:
+    os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'             # hide oneDNN message
+warnings.filterwarnings('ignore', message='.*pkg_resources.*')
 
 import numpy as np
 

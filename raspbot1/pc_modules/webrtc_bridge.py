@@ -137,6 +137,7 @@ class WebRtcBridge:
         self._env_channel = None
         self._command_channel = None
         self._pending_ice = []
+        self._current_session_id = ""
         self._cloud_uploader = CloudUploader()
         self._stop_event: Optional[threading.Event] = None
         self._env_task: Optional[asyncio.Task] = None
@@ -175,7 +176,6 @@ class WebRtcBridge:
             close_timeout=2,
         ) as ws:
             logger.info('signaling connected')
-            await self._create_peer(ws)
             while self._stop_event is None or not self._stop_event.is_set():
                 try:
                     message = await asyncio.wait_for(ws.recv(), timeout=0.5)
@@ -186,7 +186,7 @@ class WebRtcBridge:
                 await self._handle_signal(ws, message)
             await self._cancel_signaling_env_tasks()
 
-    async def _create_peer(self, ws):
+    async def _create_peer(self, ws, session_id: str = ""):
         await self._close_peer()
         ice_servers = [RTCIceServer(urls=self.cfg.stun_url)]
         if self.cfg.turn_url and self.cfg.turn_username and self.cfg.turn_credential:
@@ -225,7 +225,10 @@ class WebRtcBridge:
         async def on_icecandidate(candidate):
             if candidate is None:
                 return
-            await ws.send(json.dumps({"type": TYPE_WEBRTC_ICE, "candidate": _candidate_to_json(candidate)}))
+            payload = {"type": TYPE_WEBRTC_ICE, "candidate": _candidate_to_json(candidate)}
+            if session_id:
+                payload["sessionId"] = session_id
+            await ws.send(json.dumps(payload))
 
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
@@ -344,7 +347,10 @@ class WebRtcBridge:
         sdp = str(payload.get("sdp") or payload.get("offer") or "").replace("\\n", "\n")
         if not sdp:
             return
-        await self._create_peer(ws)
+        session_id = str(payload.get("sessionId") or "")
+        self._current_session_id = session_id
+        self._pending_ice.clear()
+        await self._create_peer(ws, session_id)
         pc = self._pc
         if pc is None:
             return
@@ -354,18 +360,25 @@ class WebRtcBridge:
         self._pending_ice.clear()
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
-        await ws.send(
-            json.dumps(
-                {
-                    "type": TYPE_WEBRTC_ANSWER,
-                    "sdp": pc.localDescription.sdp,
-                    "sdpType": pc.localDescription.type,
-                }
-            )
-        )
-        logger.info('answered app offer')
+        answer_payload = {
+            "type": TYPE_WEBRTC_ANSWER,
+            "sdp": pc.localDescription.sdp,
+            "sdpType": pc.localDescription.type,
+        }
+        if session_id:
+            answer_payload["sessionId"] = session_id
+        await ws.send(json.dumps(answer_payload))
+        logger.info('answered app offer session=%s', session_id or '-')
 
     async def _add_ice(self, payload: dict):
+        session_id = str(payload.get("sessionId") or "")
+        if self._current_session_id and session_id != self._current_session_id:
+            logger.debug(
+                'drop stale WebRTC ice session=%s current=%s',
+                session_id or '-',
+                self._current_session_id,
+            )
+            return
         candidate = _candidate_from_payload(payload)
         if candidate is None:
             return

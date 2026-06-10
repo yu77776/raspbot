@@ -19,7 +19,7 @@
   "servo_y_hold": 90.0,
 
   "enable_motor_control": true,
-  "body_kp": 0.1,
+  "body_kp": 0.05,
   "body_kd_imu": 0.01,
   "body_dead_zone": 1.0,
   "body_speed_min": 40,

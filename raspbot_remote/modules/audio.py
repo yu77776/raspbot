@@ -227,10 +227,21 @@ class Audio(ModuleBase):
         return repaired if repaired else name
 
     def _wait_until_finished(self):
+        # Re-apply the latest volume every tick so volume changes during playback
+        # take effect on the *current* track, not just the next one. A single
+        # set_volume() call from the command thread can be missed by SDL on some
+        # devices; continuously feeding the latest value makes the playing track
+        # converge to the newest volume within one tick.
+        last_applied = None
         while pygame.mixer.music.get_busy():
             if self.stop_flag.is_set():
                 pygame.mixer.music.stop()
                 break
+            with self.lock:
+                vol = self.volume
+            if vol != last_applied:
+                pygame.mixer.music.set_volume(vol / 100.0)
+                last_applied = vol
             time.sleep(0.1)
 
     def _play_file(self, filename):

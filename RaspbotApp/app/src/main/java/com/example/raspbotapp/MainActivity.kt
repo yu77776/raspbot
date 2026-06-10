@@ -53,6 +53,9 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_SPEAKER_VOLUME = "speaker_volume"
 
         private const val CMD_SEND_INTERVAL_MS = 100L
+        private const val WEBRTC_OFFER_RETRY_INITIAL_MS = 2500L
+        private const val WEBRTC_OFFER_RETRY_MS = 5000L
+        private const val WEBRTC_ANSWER_GRACE_MS = 18000L
 
         private const val TREND_WINDOW_MS = 5 * 60 * 1000L
         private const val TREND_RENDER_POINTS = 72
@@ -158,6 +161,8 @@ class MainActivity : AppCompatActivity() {
     private val executor = Executors.newFixedThreadPool(2)
 
     private var commandTicker: Runnable? = null
+    private var webRtcOfferRetry: Runnable? = null
+    private var lastWebRtcAnswerAtMs: Long = 0L
     private var isActivityAlive = true
     private var reconnectOnNextStart = false
     // Command state
@@ -247,6 +252,7 @@ class MainActivity : AppCompatActivity() {
         super.onStop()
         sendAction("stop")
         connectionClient.close("Activity background")
+        stopWebRtcOfferRetry()
         reconnectOnNextStart = true
         startBackgroundAlarmService()
     }
@@ -256,6 +262,7 @@ class MainActivity : AppCompatActivity() {
         sendAction("stop")
         mainHandler.removeCallbacksAndMessages(null)
         stopCommandTicker()
+        stopWebRtcOfferRetry()
 
         webRtcClient.close()
         connectionClient.shutdown()
@@ -369,6 +376,7 @@ class MainActivity : AppCompatActivity() {
                     mainHandler.post {
                         webRtcClient.setup()
                         webRtcClient.start()
+                        startWebRtcOfferRetry()
                     }
                     startCommandTicker()
                 }
@@ -386,11 +394,13 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onClosed() {
+                    stopWebRtcOfferRetry()
                     updateConnectionStatus("已断开")
                     updateVideoStatus("连接断开")
                 }
 
                 override fun onFailure(message: String) {
+                    stopWebRtcOfferRetry()
                     updateConnectionStatus("连接失败: $message")
                     updateVideoStatus("无连接")
                 }
@@ -402,18 +412,24 @@ class MainActivity : AppCompatActivity() {
             signalingSender = { text -> connectionClient.sendSignaling(text) },
             callbacks = object : RaspbotWebRtcClient.Callbacks {
                 override fun onStatus(text: String) {
+                    if (text == "WebRTC已连接") {
+                        videoFrameReceived = true
+                        updateConnectionStatus("● 在线")
+                        stopWebRtcOfferRetry()
+                    }
                     updateVideoStatus(text)
                 }
 
                 override fun onRemoteVideo() {
-                    if (!videoFrameReceived) {
+                    if (!videoFrameReceived && webRtcClient.isIceConnected()) {
                         videoFrameReceived = true
                         updateConnectionStatus("● 在线")
+                        stopWebRtcOfferRetry()
                     }
                     mainHandler.post {
                         imgVideoFrame.visibility = View.GONE
                         rtcVideo.visibility = View.VISIBLE
-                        updateVideoStatus("WebRTC视频")
+                        updateVideoStatus(if (webRtcClient.isIceConnected()) "WebRTC视频" else "等待视频流")
                     }
                 }
 
@@ -422,6 +438,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onCommandChannelOpen() {
+                    stopWebRtcOfferRetry()
                     sendCommand(force = true)
                 }
 
@@ -1009,12 +1026,47 @@ class MainActivity : AppCompatActivity() {
 
     private fun reconnectAll() {
         stopService(Intent(this, RaspbotAlarmService::class.java))
+        stopWebRtcOfferRetry()
         speakerVolumeDirty = true
         speakerVolumeNeedsInitialCarSync = true
         imgVideoFrame.visibility = View.VISIBLE
         rtcVideo.visibility = View.GONE
         webRtcClient.close()
         connectionClient.reconnect()
+    }
+
+    private fun startWebRtcOfferRetry() {
+        stopWebRtcOfferRetry()
+        lastWebRtcAnswerAtMs = 0L
+        val retry = object : Runnable {
+            override fun run() {
+                if (!isActivityAlive || !connectionClient.isConnected()) {
+                    webRtcOfferRetry = null
+                    return
+                }
+                if (videoFrameReceived || webRtcClient.isIceConnected()) {
+                    webRtcOfferRetry = null
+                    return
+                }
+                val answerAgeMs = SystemClock.elapsedRealtime() - lastWebRtcAnswerAtMs
+                if (lastWebRtcAnswerAtMs > 0L && answerAgeMs < WEBRTC_ANSWER_GRACE_MS) {
+                    mainHandler.postDelayed(this, WEBRTC_OFFER_RETRY_MS)
+                    return
+                }
+                Log.d(TAG, "retry WebRTC offer while waiting for PC bridge")
+                updateVideoStatus("等待视频流")
+                webRtcClient.setup()
+                webRtcClient.start()
+                mainHandler.postDelayed(this, WEBRTC_OFFER_RETRY_MS)
+            }
+        }
+        webRtcOfferRetry = retry
+        mainHandler.postDelayed(retry, WEBRTC_OFFER_RETRY_INITIAL_MS)
+    }
+
+    private fun stopWebRtcOfferRetry() {
+        webRtcOfferRetry?.let { mainHandler.removeCallbacks(it) }
+        webRtcOfferRetry = null
     }
 
     private fun reconnectVideoManually() {
@@ -1052,6 +1104,7 @@ class MainActivity : AppCompatActivity() {
             when (obj.get("type")?.asString) {
                 RaspbotProtocol.TYPE_WEBRTC_ANSWER -> {
                     Log.d(TAG, "WebRTC answer received")
+                    lastWebRtcAnswerAtMs = SystemClock.elapsedRealtime()
                     webRtcClient.handleAnswer(obj)
                 }
                 RaspbotProtocol.TYPE_WEBRTC_ICE -> {
@@ -1228,7 +1281,9 @@ class MainActivity : AppCompatActivity() {
             } else {
                 lastAlarmSignature = ""
             }
-            updateCareSummary(alarm, dist, temp, crying, cryScore)
+            if (hasCareSummaryInput(alarm, dist, temp, crying, cryScore)) {
+                updateCareSummary(alarm, dist, temp, crying, cryScore)
+            }
 
         } catch (e: Exception) {
             Log.w(TAG, "handleEnvJson error", e)
@@ -1331,6 +1386,20 @@ class MainActivity : AppCompatActivity() {
             tvCareSummary.text = summary
             tvCareSummary.setTextColor(if (hasAlarm) Color.parseColor("#C9A84A") else Color.parseColor("#F0ECE4"))
         }
+    }
+
+    private fun hasCareSummaryInput(
+        alarm: String?,
+        dist: Float?,
+        temp: Float?,
+        crying: Boolean?,
+        cryScore: Int?
+    ): Boolean {
+        return !alarm.isNullOrBlank() ||
+            dist != null ||
+            temp != null ||
+            crying != null ||
+            cryScore != null
     }
 
     private fun buildCareSummary(

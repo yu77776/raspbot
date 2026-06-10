@@ -51,8 +51,12 @@ def _is_data_only_path(path: str) -> bool:
 
 
 class CarServer:
-    def __init__(self, asr_url=None, mic_health_timeout=5.0, auth_token=None):
+    def __init__(self, asr_url=None, mic_health_timeout=5.0, auth_token=None,
+                 camera_fatal_restart: bool = True):
         self.auth_token = resolve_auth_token(auth_token)
+        self._camera_fatal_restart = camera_fatal_restart
+        self._camera_fatal_count = 0
+        self._camera_fatal_max = int(os.getenv('RASPBOT_CAMERA_FATAL_MAX', '2'))
         self.ultrasonic = Ultrasonic()
         self.pcf8591 = PCF8591(smoke_threshold=30)
         self.infrared = Infrared()
@@ -94,7 +98,7 @@ class CarServer:
         self._control_owner = None
         self._control_owner_until = 0.0
         self.control_lease_sec = float(os.getenv('RASPBOT_CONTROL_LEASE_SEC', '1.2'))
-        self.home_servos_on_startup = as_bool(os.getenv('RASPBOT_HOME_SERVOS_ON_STARTUP', '0'))
+        self.home_servos_on_startup = as_bool(os.getenv('RASPBOT_HOME_SERVOS_ON_STARTUP', '1'))
         self.env_update_interval = float(os.getenv('RASPBOT_ENV_INTERVAL_SEC', '0.5'))
         self.env_debug_interval = float(os.getenv('RASPBOT_ENV_DEBUG_INTERVAL_SEC', '0'))
         self._last_env_debug_log_ts = 0.0
@@ -263,15 +267,21 @@ class CarServer:
         def watchdog():
             self._mic_watchdog_started_at = time.monotonic()
             while not self.stop_event.is_set():
-                healthy = self.mic_stream.is_healthy(self.mic_health_timeout)
+                capture_timeout = max(
+                    self.mic_health_timeout,
+                    getattr(self.mic_stream, 'connect_timeout', 0.0)
+                    + getattr(self.mic_stream, 'max_backoff', 0.0)
+                    + 1.0,
+                )
+                healthy = self.mic_stream.capture_is_healthy(capture_timeout)
                 if not healthy:
                     startup_age = time.monotonic() - self._mic_watchdog_started_at
-                    if startup_age < self.mic_startup_grace_sec and self.mic_stream.get_last_ok_ts() <= 0:
+                    if startup_age < self.mic_startup_grace_sec and self.mic_stream.get_last_capture_ok_ts() <= 0:
                         time.sleep(0.2)
                         continue
-                    age = time.time() - self.mic_stream.get_last_ok_ts()
+                    age = time.time() - self.mic_stream.get_last_capture_ok_ts()
                     if not self.mic_fail_safe_active:
-                        logger.warning('MIC unhealthy age=%.2fs timeout=%.2fs -> safe stop', age, self.mic_health_timeout)
+                        logger.warning('MIC unhealthy age=%.2fs timeout=%.2fs -> safe stop', age, capture_timeout)
                         self._safe_stop_motion('mic unhealthy')
                         self.mic_fail_safe_active = True
                 else:
@@ -348,6 +358,7 @@ class CarServer:
         if self.home_servos_on_startup:
             self.motor.center_servos(90, 90, force=True)
             time.sleep(0.12)
+            logger.info('startup servo homing done (center 90/90)')
         else:
             logger.info('startup servo homing disabled')
         self.ultrasonic.start()
@@ -494,17 +505,25 @@ class CarServer:
                         restart_status = await asyncio.to_thread(self.camera.restart)
                         if restart_status == CameraRestartStatus.OK:
                             last_seq = -1
+                            self._camera_fatal_count = 0
                         elif restart_status == CameraRestartStatus.FATAL:
-                            logger.error('camera restart fatal; will retry after cooldown')
-                            # Don't kill the whole process — just wait and retry camera only.
+                            self._camera_fatal_count += 1
+                            logger.error('camera restart fatal (x%d); will retry after cooldown',
+                                         self._camera_fatal_count)
                             await asyncio.sleep(3.0)
                             # Retry once more after a short wait.
                             retry_status = await asyncio.to_thread(self.camera.restart)
                             if retry_status == CameraRestartStatus.OK:
                                 last_seq = -1
+                                self._camera_fatal_count = 0
                                 logger.info('camera recovered on retry')
                             else:
-                                logger.error('camera still dead; will keep retrying on next stale cycle')
+                                self._camera_fatal_count += 1
+                                logger.error('camera still dead (fatal x%d / max %d)',
+                                             self._camera_fatal_count, self._camera_fatal_max)
+                                if self._camera_fatal_restart and self._camera_fatal_count >= self._camera_fatal_max:
+                                    logger.error('camera unrecoverable — restarting car process')
+                                    os.execvpe(sys.executable, [sys.executable] + sys.argv, os.environ.copy())
                     await asyncio.sleep(0.01)
                     continue
                 last_seq = seq
@@ -597,6 +616,7 @@ async def main(host, port, asr_url, mic_health_timeout, auth_token):
         asr_url=asr_url,
         mic_health_timeout=mic_health_timeout,
         auth_token=auth_token,
+        camera_fatal_restart=as_bool(os.getenv('RASPBOT_CAMERA_FATAL_RESTART', '1')),
     )
     loop = asyncio.get_running_loop()
     shutdown = loop.create_future()

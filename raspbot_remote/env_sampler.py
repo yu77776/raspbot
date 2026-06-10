@@ -113,12 +113,11 @@ class EnvSampler:
         imu_data = self.imu.get_data() if self.imu.enabled else {}
         if not imu_data:
             return None
-        gyro = imu_data.get("gyro_dps", [0.0, 0.0, 0.0])
         return ImuPacket(
             roll=float(imu_data.get("roll", 0.0)),
             pitch=float(imu_data.get("pitch", 0.0)),
             yaw=float(imu_data.get("yaw", 0.0)),
-            yaw_rate=float(gyro[2]) if len(gyro) > 2 else 0.0,
+            yaw_rate=float(imu_data.get("yaw_rate", 0.0)),
             healthy=bool(imu_data.get("healthy", False)),
             calibrated=bool(imu_data.get("calibrated", False)),
         )

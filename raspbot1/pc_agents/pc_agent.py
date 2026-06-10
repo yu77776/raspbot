@@ -49,7 +49,7 @@ class PcAgent:
             uri=self.endpoint.auth_uri,
             model_path=self.args.model,
             yolo_device=self.args.yolo_device,
-            yolo_disable_cudnn=not self.args.yolo_use_cudnn,
+            yolo_disable_cudnn=self.args.yolo_disable_cudnn,
             tuning_path=self.args.tuning or None,
             tracking_enabled_provider=self._tracking_enabled,
         )

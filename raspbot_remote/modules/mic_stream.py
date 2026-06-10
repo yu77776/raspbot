@@ -56,6 +56,7 @@ class MicStream(ModuleBase):
         self.thread = None
         self.started = False
         self.last_ok_ts = 0.0
+        self.last_capture_ok_ts = 0.0
         self.connected = False
         self._capture_proc = None
 
@@ -173,6 +174,8 @@ class MicStream(ModuleBase):
     async def _stream_once(self):
         proc, device = self._open_capture()
         logger.info('capture ready device=%s', device)
+        with self.lock:
+            self.last_capture_ok_ts = time.time()
 
         try:
             async with websockets.connect(
@@ -191,6 +194,9 @@ class MicStream(ModuleBase):
                     chunk = await self._read_chunk(proc, device)
                     if not chunk:
                         raise RuntimeError('audio stream closed')
+                    now = time.time()
+                    with self.lock:
+                        self.last_capture_ok_ts = now
                     try:
                         await asyncio.wait_for(ws.send(chunk), timeout=self.send_timeout)
                     except asyncio.TimeoutError:
@@ -200,7 +206,6 @@ class MicStream(ModuleBase):
                             self.send_timeout,
                         )
                         raise RuntimeError(f'audio send timeout device={device}')
-                    now = time.time()
                     with self.lock:
                         self.last_ok_ts = now
                     if now - last_progress_log >= 10.0:
@@ -220,10 +225,16 @@ class MicStream(ModuleBase):
             except Exception as e:
                 if self.stop_event.is_set():
                     break
+                with self.lock:
+                    had_recent_stream = self.last_ok_ts > 0
+                reconnect_delay = 0.5 if had_recent_stream else backoff
                 logger.warning('disconnected: %s', e)
-                logger.info('reconnect in %.1fs', backoff)
-                await asyncio.sleep(backoff)
-                backoff = min(self.max_backoff, backoff * 2)
+                logger.info('reconnect in %.1fs', reconnect_delay)
+                await asyncio.sleep(reconnect_delay)
+                if had_recent_stream:
+                    backoff = 0.5
+                else:
+                    backoff = min(self.max_backoff, backoff * 2)
 
         logger.info('stream loop stopped')
 
@@ -242,6 +253,18 @@ class MicStream(ModuleBase):
     def get_last_ok_ts(self):
         with self.lock:
             return self.last_ok_ts
+
+    def get_last_capture_ok_ts(self):
+        with self.lock:
+            return self.last_capture_ok_ts
+
+    def capture_is_healthy(self, timeout_s=None):
+        timeout_s = self.health_timeout if timeout_s is None else float(timeout_s)
+        with self.lock:
+            last_capture_ok = self.last_capture_ok_ts
+        if last_capture_ok <= 0:
+            return False
+        return (time.time() - last_capture_ok) <= timeout_s
 
     def is_healthy(self, timeout_s=None):
         timeout_s = self.health_timeout if timeout_s is None else float(timeout_s)

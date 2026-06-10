@@ -21,6 +21,7 @@ def _args(**overrides):
         ssh_password=None,
         trust_new_host_key=False,
         skip_car_sync=False,
+        disable_asr=False,
         disable_mic_stream=False,
         no_tail=True,
         refresh_car_cache=False,
@@ -62,6 +63,37 @@ class TestCarAgent(unittest.TestCase):
 
         self.assertFalse(remote.stopped)
         self.assertTrue(remote.closed)
+
+    def test_disable_asr_disables_remote_mic_stream(self):
+        class Result:
+            exit_status = 0
+            stdout = "started"
+            stderr = ""
+
+        class FakeRemote:
+            last_kwargs = None
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start_server(self, **kwargs):
+                FakeRemote.last_kwargs = kwargs
+                return Result()
+
+            def close(self):
+                pass
+
+        car = CarDiscovery(name="raspbot", ip="10.0.0.5", port=5001, raw={"source": "explicit"})
+        agent = CarAgent(
+            _args(skip_car_start=False, skip_car_sync=True, leave_car_running=True, disable_asr=True),
+            auth_token="token",
+        )
+
+        with patch("pc_modules.car_resolver.resolve_car", return_value=car), \
+             patch("pc_modules.remote_car.RemoteCar", FakeRemote):
+            agent.start()
+
+        self.assertTrue(FakeRemote.last_kwargs["disable_mic_stream"])
 
 
 if __name__ == "__main__":
