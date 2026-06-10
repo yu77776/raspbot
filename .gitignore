@@ -57,6 +57,8 @@ Thumbs.db
 CLAUDE.md
 
 # Local generated scratch/artifacts
+.codebase-memory/
+tools/
 tmp/
 icon_candidates/
 _temp_name.txt
